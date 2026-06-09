@@ -1,0 +1,66 @@
+name: release
+
+# Builds the binaries on CI (no local build needed) and publishes them to a
+# GitHub Release so the curl|bash installer can fetch them.
+#
+# Trigger by pushing a version tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+# or run manually from the Actions tab (workflow_dispatch).
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0)"
+        required: true
+        default: "v0.0.0-dev"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Vet & test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
+              go build -ldflags "-s -w" -o dist/forge-linux-$arch .
+          done
+          ( cd dist && sha256sum forge-* > checksums.txt )
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          files: |
+            dist/forge-linux-amd64
+            dist/forge-linux-arm64
+            dist/checksums.txt
+          generate_release_notes: true

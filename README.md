@@ -32,18 +32,33 @@ Every step is **idempotent** — re-running skips what's already done. SSH
 hardening always runs **last**, so the box stays reachable until everything
 else succeeds.
 
-## Build
+## Install & run (one command)
+
+On a fresh server, download the prebuilt binary and launch the wizard:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mxm-bbv/cli/main/install.sh | bash
+```
+
+The installer detects your architecture (amd64/arm64), drops `forge` into
+`/usr/local/bin`, and starts the wizard. Afterwards it's always available as:
+
+```bash
+sudo forge
+```
+
+> Prefer a vanity URL like `mxm-bbv.dev/cli.sh`? Point that path (redirect or
+> reverse-proxy) at the raw `install.sh` above — the script itself is
+> URL-agnostic.
+
+Binaries are published automatically by GitHub Actions when a version tag is
+pushed (`git tag v0.1.0 && git push origin v0.1.0`), so you never build by hand.
+
+## Build from source (optional)
 
 ```bash
 make build            # -> ./forge for this platform
 make build-linux      # -> dist/forge-linux-{amd64,arm64}
-```
-
-## Usage
-
-Copy the binary to a fresh server and run as root:
-
-```bash
 sudo ./forge
 ```
 
