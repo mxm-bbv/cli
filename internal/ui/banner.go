@@ -8,17 +8,19 @@ import (
 )
 
 const asciiArt = `
-   ____                          ____
-  / __/__ _____  _____ ____     / __/__  _______ ____
- _\ \/ -_) __/ |/ / -_) __/    / _// _ \/ __/ _ ` + "`" + `/ -_)
-/___/\__/_/  |___/\__/_/      /_/  \___/_/  \_, /\__/
-                                           /___/
+ ██████╗██╗     ██╗
+██╔════╝██║     ██║
+██║     ██║     ██║
+██║     ██║     ██║
+╚██████╗███████╗██║
+ ╚═════╝╚══════╝╚═╝
 `
 
-// Banner returns the styled ASCII banner with version and subtitle.
+// Banner returns the styled ASCII banner with author credit, version and subtitle.
 func Banner(version string) string {
 	art := lipgloss.NewStyle().Foreground(ColorEmber).Bold(true).Render(asciiArt)
+	credit := StyleKey.Render("  Created by mxm_bbv")
 	subtitle := StyleSub.Render("  Forge a clean server into a production-ready host — Docker · Portainer · SSH · hardening")
 	ver := StyleMuted.Render(fmt.Sprintf("  v%s", version))
-	return strings.Join([]string{art, subtitle, ver, ""}, "\n")
+	return strings.Join([]string{art, credit, subtitle, ver, ""}, "\n")
 }
