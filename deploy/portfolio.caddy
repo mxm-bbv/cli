@@ -1,0 +1,22 @@
+# Example: serve the ServerForge installer + binary from the apex domain,
+# alongside an existing reverse-proxied app. Files come from /var/www/cli-dist
+# (host: /srv/projects/cli-dist, mounted via the caddy compose volume
+# `- /srv/projects:/var/www`).
+#
+# Generate the checksum next to the binary on the server:
+#   sha256sum /srv/projects/cli-dist/forge-linux-amd64 \
+#     | awk '{print $1}' > /srv/projects/cli-dist/forge-linux-amd64.sha256
+
+mxm-bbv.dev {
+    import compress
+
+    @dist path /cli.sh /forge-linux-amd64 /forge-linux-amd64.sha256 /forge-linux-arm64 /forge-linux-arm64.sha256
+    handle @dist {
+        root * /var/www/cli-dist
+        file_server
+    }
+
+    handle {
+        reverse_proxy portfolio-web:3000
+    }
+}

@@ -40,16 +40,16 @@ On a fresh server, download the prebuilt binary and launch the wizard:
 curl -fsSL https://raw.githubusercontent.com/mxm-bbv/cli/main/install.sh | bash
 ```
 
-The installer detects your architecture (amd64/arm64), drops `forge` into
-`/usr/local/bin`, and starts the wizard. Afterwards it's always available as:
+The installer detects your architecture (amd64/arm64), verifies the binary's
+SHA256, drops `forge` into `/usr/local/bin`, and starts the wizard. Afterwards
+it's always available as:
 
 ```bash
 sudo forge
 ```
 
-> Prefer a vanity URL like `mxm-bbv.dev/cli.sh`? Point that path (redirect or
-> reverse-proxy) at the raw `install.sh` above — the script itself is
-> URL-agnostic.
+> Prefer a vanity URL like `mxm-bbv.dev/cli.sh`? See [`deploy/`](deploy/) for a
+> self-hosted Caddy setup that serves the installer + binary from your domain.
 
 Binaries are published automatically by GitHub Actions when a version tag is
 pushed (`git tag v0.1.0 && git push origin v0.1.0`), so you never build by hand.
@@ -91,6 +91,18 @@ When root login or password auth is disabled, **open a new terminal and verify
 isn't right, fix it from the still-open session — `forge` validates `sshd -t`
 before restarting, but it can't test *your* key for you.
 
+## Security
+
+Supply-chain hardening is a first-class concern — see [`SECURITY.md`](SECURITY.md)
+for the full picture. In short:
+
+- Docker's apt key is **fingerprint-verified** (fail-closed) before it can sign packages.
+- Container images are **pinned to versions** (never `:latest`) and run with `no-new-privileges`.
+- GitHub's SSH host key is **pinned**, not trust-on-first-use.
+- Installers **verify SHA256** and fail closed on mismatch.
+- Usernames are regex-validated and all downloads run **without a shell** (no injection).
+- Preview everything first: `forge --dry-run` prints every command and changes nothing.
+
 ## Layout
 
 ```
@@ -99,6 +111,7 @@ internal/config         Config struct + YAML load/save (password excluded)
 internal/system         shell exec wrappers (dry-run aware) + host facts
 internal/steps          ordered, idempotent provisioning steps
 internal/ui             banner, huh wizard, bubbletea runner, summary
+deploy/                 self-hosted Caddy installer (cli.sh + site block)
 ```
 ```bash
 go test ./...           # exercises the full step engine in dry-run mode

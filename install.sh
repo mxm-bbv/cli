@@ -43,12 +43,43 @@ need() { command -v "$1" >/dev/null 2>&1 || { red "missing required tool: $1"; e
 need curl
 
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+SUMS="$(mktemp)"
+trap 'rm -f "$TMP" "$SUMS"' EXIT
 info "Downloading ${ASSET} (${VERSION})…"
 if ! curl -fSL --progress-bar "$URL" -o "$TMP"; then
   red "Download failed. Has a release been published yet?"
   red "  $URL"
   exit 1
+fi
+
+# --- verify checksum (fail closed) -----------------------------------------
+# checksums.txt is published alongside the binaries by the release workflow.
+if [ "$VERSION" = "latest" ]; then
+  SUMS_URL="https://github.com/${REPO}/releases/latest/download/checksums.txt"
+else
+  SUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
+fi
+if curl -fsSL "$SUMS_URL" -o "$SUMS" 2>/dev/null; then
+  EXPECTED="$(awk -v f="$ASSET" '$2==f || $2=="*"f {print $1}' "$SUMS" | head -n1)"
+  if [ -z "$EXPECTED" ]; then
+    red "No checksum for ${ASSET} in checksums.txt — refusing to run."; exit 1
+  fi
+  ACTUAL="$(sha256sum "$TMP" | awk '{print $1}')"
+  if [ "$EXPECTED" != "$ACTUAL" ]; then
+    red "Checksum MISMATCH for ${ASSET} — aborting."
+    red "  expected: $EXPECTED"
+    red "  actual:   $ACTUAL"
+    exit 1
+  fi
+  ok "Checksum verified (sha256: ${ACTUAL})"
+else
+  # No checksums file: warn loudly. Set FORGE_ALLOW_UNVERIFIED=1 to proceed.
+  if [ "${FORGE_ALLOW_UNVERIFIED:-0}" != "1" ]; then
+    red "checksums.txt not found — refusing to run unverified binary."
+    red "Set FORGE_ALLOW_UNVERIFIED=1 to override (not recommended)."
+    exit 1
+  fi
+  red "WARNING: proceeding with an UNVERIFIED binary (FORGE_ALLOW_UNVERIFIED=1)."
 fi
 chmod +x "$TMP"
 
