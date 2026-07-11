@@ -45,8 +45,9 @@ func TestDryRunAllSteps(t *testing.T) {
 		"usermod -aG sudo deploy",        // sudo group
 		"usermod -aG docker deploy",      // docker group
 		"ssh-keygen -t ed25519",          // github key
-		"portainer/agent:latest",         // portainer
-		"containrrr/watchtower",          // watchtower
+		portainerAgentImage,              // portainer (pinned version)
+		watchtowerImage,                  // watchtower (pinned version)
+		"no-new-privileges",              // containers hardened
 		"ufw allow 2222/tcp",             // firewall honours ssh port
 		"jail.d/sshd.local",              // fail2ban jail
 		"20auto-upgrades",                // unattended-upgrades config
@@ -62,6 +63,40 @@ func TestDryRunAllSteps(t *testing.T) {
 	// The deploy password must never appear in the command log.
 	if strings.Contains(log, "s3cret") {
 		t.Fatal("deploy password leaked into command log")
+	}
+}
+
+// TestValidUsernameRejectsInjection ensures crafted usernames can't slip into
+// the shell commands that reference them.
+func TestValidUsernameRejectsInjection(t *testing.T) {
+	good := []string{"deploy", "web_01", "ci-runner", "_svc"}
+	for _, n := range good {
+		if err := ValidUsername(n); err != nil {
+			t.Errorf("expected %q to be valid: %v", n, err)
+		}
+	}
+	bad := []string{
+		"", "Deploy", "1user", "a b", "a;rm -rf /", "a$(id)", "a`whoami`",
+		"a/b", "../root", "user\nname", "toolongusernameaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	for _, n := range bad {
+		if err := ValidUsername(n); err == nil {
+			t.Errorf("expected %q to be rejected", n)
+		}
+	}
+}
+
+// TestGitHubUsernameValidation guards the admin-key GitHub fetch path.
+func TestGitHubUsernameValidation(t *testing.T) {
+	for _, n := range []string{"torvalds", "mxm-bbv", "a"} {
+		if !githubUserRe.MatchString(n) {
+			t.Errorf("expected %q to be a valid github username", n)
+		}
+	}
+	for _, n := range []string{"", "-bad", "a b", "a;b", "a/b", "a$b"} {
+		if githubUserRe.MatchString(n) {
+			t.Errorf("expected %q to be rejected", n)
+		}
 	}
 }
 

@@ -29,8 +29,12 @@ func sshKeysStep() Step {
 					return err
 				}
 				if key != "" {
+					fields := strings.Fields(key)
+					if len(fields) < 2 {
+						return fmt.Errorf("admin key does not look like a valid SSH public key")
+					}
 					ak := sshDir + "/authorized_keys"
-					if !system.FileContains(ak, strings.Fields(key)[1]) {
+					if !system.FileContains(ak, fields[1]) {
 						if err := appendLine(ak, key); err != nil {
 							return err
 						}
@@ -54,10 +58,15 @@ func sshKeysStep() Step {
 					c.GitHubPubKey = "<generated on real run — paste into GitHub → Deploy keys>"
 				}
 
-				// 3. known_hosts for github.com (avoids interactive prompt on first clone).
+				// 3. known_hosts for github.com — verified against GitHub's pinned
+				//    fingerprint instead of blindly trusting ssh-keyscan (TOFU).
 				kh := sshDir + "/known_hosts"
 				if !system.FileContains(kh, "github.com") {
-					if _, err := system.RunShell(fmt.Sprintf("ssh-keyscan github.com >> %s 2>/dev/null", kh)); err != nil {
+					entry, err := verifiedGitHubHostKey()
+					if err != nil {
+						return err
+					}
+					if err := appendLine(kh, entry); err != nil {
 						return err
 					}
 				}
@@ -95,7 +104,11 @@ func resolveAdminKey(cfg config.Config) (string, error) {
 		return strings.TrimSpace(string(data)), nil
 	case config.AdminKeyGitHub:
 		user := strings.TrimSpace(cfg.AdminKeyValue)
-		out, err := system.RunShell(fmt.Sprintf("curl -fsSL https://github.com/%s.keys", user))
+		if !githubUserRe.MatchString(user) {
+			return "", fmt.Errorf("%q is not a valid GitHub username", user)
+		}
+		// exec curl (no shell) so the username can never inject a command.
+		out, err := system.Run("curl", "-fsSL", "https://github.com/"+user+".keys")
 		if err != nil {
 			return "", fmt.Errorf("fetch github keys for %q: %w", user, err)
 		}

@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/huh"
 
 	"github.com/mxm-bbv/cli/internal/config"
+	"github.com/mxm-bbv/cli/internal/steps"
 )
 
 // RunForm presents the interactive wizard, mutating and returning cfg. The
@@ -25,7 +26,7 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 			huh.NewNote().Title("Deploy user").
 				Description("A non-root user with sudo + docker access for day-to-day deploys."),
 			huh.NewInput().Title("Username").Value(&cfg.Username).
-				Validate(nonEmpty("username")),
+				Validate(steps.ValidUsername),
 		),
 	}
 

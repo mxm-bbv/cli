@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"os/user"
 
 	"github.com/mxm-bbv/cli/internal/system"
@@ -12,6 +13,11 @@ func userStep() Step {
 		Skip: always, // the Run body is itself idempotent
 		Run: func(c *Context) error {
 			cfg := c.Cfg
+
+			// Guard: the username flows into shell/exec commands elsewhere.
+			if err := ValidUsername(cfg.Username); err != nil {
+				return fmt.Errorf("invalid username %q: %w", cfg.Username, err)
+			}
 
 			// Create the user (with home + bash) if it doesn't exist.
 			if !userExists(cfg.Username) {
