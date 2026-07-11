@@ -39,20 +39,20 @@ func TestDryRunAllSteps(t *testing.T) {
 	// downloads are idempotent and may be skipped on an already-provisioned
 	// host (like this CI box), which is correct behaviour.
 	wantSubstrings := []string{
-		"apt-get update",                 // preflight
-		"sources.list.d/docker.list",     // docker apt source (always written)
-		"useradd -m -s /bin/bash deploy", // deploy user
-		"usermod -aG sudo deploy",        // sudo group
-		"usermod -aG docker deploy",      // docker group
-		"ssh-keygen -t ed25519",          // github key
-		portainerAgentImage,              // portainer (pinned version)
-		watchtowerImage,                  // watchtower (pinned version)
-		"no-new-privileges",              // containers hardened
-		"ufw allow 2222/tcp",             // firewall honours ssh port
-		"jail.d/sshd.local",              // fail2ban jail
-		"20auto-upgrades",                // unattended-upgrades config
-		"sshd -t",                        // sshd validated before restart
-		"systemctl restart ssh",          // sshd restarted last
+		"apt-get -o DPkg::Lock::Timeout=300 update", // preflight (non-interactive apt)
+		"sources.list.d/docker.list",                // docker apt source (always written)
+		"useradd -m -s /bin/bash deploy",            // deploy user
+		"usermod -aG sudo deploy",                   // sudo group
+		"usermod -aG docker deploy",                 // docker group
+		"ssh-keygen -t ed25519",                     // github key
+		portainerAgentImage,                         // portainer (pinned version)
+		watchtowerImage,                             // watchtower (pinned version)
+		"no-new-privileges",                         // containers hardened
+		"ufw allow 2222/tcp",                        // firewall honours ssh port
+		"jail.d/sshd.local",                         // fail2ban jail
+		"20auto-upgrades",                           // unattended-upgrades config
+		"sshd -t",                                   // sshd validated before restart
+		"systemctl restart ssh",                     // sshd restarted last
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
