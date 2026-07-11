@@ -30,7 +30,12 @@ func dockerStep() Step {
 			}
 			if !system.FileExists("/etc/apt/keyrings/docker.asc") {
 				url := fmt.Sprintf("https://download.docker.com/linux/%s/gpg", repoOS)
-				if _, err := system.RunShell(fmt.Sprintf("curl -fsSL %s -o /etc/apt/keyrings/docker.asc", url)); err != nil {
+				// curl via exec (no shell) — the URL is fixed, but keep it uniform.
+				if _, err := system.Run("curl", "-fsSL", url, "-o", "/etc/apt/keyrings/docker.asc"); err != nil {
+					return err
+				}
+				// Refuse to proceed unless the key matches Docker's pinned fingerprint.
+				if err := verifyDockerKey("/etc/apt/keyrings/docker.asc"); err != nil {
 					return err
 				}
 				if _, err := system.Run("chmod", "a+r", "/etc/apt/keyrings/docker.asc"); err != nil {
