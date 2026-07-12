@@ -6,9 +6,10 @@ import "github.com/mxm-bbv/cli/internal/config"
 // Context carries the config plus artifacts produced during a run (surfaced in
 // the final summary).
 type Context struct {
-	Cfg          config.Config
-	GitHubPubKey string // populated by the ssh step when a key is generated
-	Notes        []string
+	Cfg               config.Config
+	GitHubPubKey      string // populated by the ssh step when a key is generated
+	AdminKeyInstalled bool   // true once a valid authorized_keys exists for the deploy user
+	Notes             []string
 }
 
 // Step is a single, idempotent unit of work.

@@ -1,77 +1,134 @@
 // Package system provides thin wrappers around shell execution and host facts
-// used by the provisioning steps. Every mutating command flows through Run /
-// RunQuiet so that --dry-run can intercept it in a single place.
+// used by the provisioning steps. Every mutating command flows through these
+// helpers so that dry-run, live output, logging and per-command timeouts are
+// handled in exactly one place.
 package system
 
 import (
-	"bytes"
+	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
-// DryRun, when true, makes Run/RunQuiet print the command instead of executing
-// it. Read-only helpers (CommandExists, PkgInstalled, FileContains, ReadFile)
-// always run for real so dry-run reflects the actual host state.
+// DryRun, when true, records commands instead of executing them. Read-only
+// helpers (CommandExists, PkgInstalled, FileContains, …) always run for real so
+// dry-run reflects actual host state.
 var DryRun bool
 
-// CommandLog collects every command that Run/RunQuiet was asked to execute.
-// Useful for the dry-run summary and for tests.
+// CommandLog collects every command Run/RunShell was asked to execute.
 var CommandLog []string
 
-// Run executes a command, streaming nothing but returning combined output.
-// In dry-run mode it records the command and returns empty output.
+// LogWriter, when set, receives the full stdout+stderr of every command plus a
+// "$ <cmd>" header — this is the on-disk transcript the user can tail.
+var LogWriter io.Writer
+
+// CommandTimeout bounds how long any single command may run before it is killed
+// and reported as a timeout. This is what turns a silent hang (an unexpected
+// apt/debconf prompt, a stuck lock) into a clear, recoverable error.
+var CommandTimeout = 15 * time.Minute
+
+var (
+	activityMu sync.RWMutex
+	activity   string
+)
+
+func setActivity(s string) {
+	activityMu.Lock()
+	activity = s
+	activityMu.Unlock()
+}
+
+// Activity returns the most recent output line of the running command, for the
+// runner to display live under the active step.
+func Activity() string {
+	activityMu.RLock()
+	defer activityMu.RUnlock()
+	return activity
+}
+
+// Run executes a command, streaming its output to the log and live display, and
+// returns the combined output.
 func Run(name string, args ...string) (string, error) {
-	cmdline := name + " " + strings.Join(args, " ")
-	CommandLog = append(CommandLog, strings.TrimSpace(cmdline))
-	if DryRun {
-		return "", nil
-	}
-	cmd := exec.Command(name, args...)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	if err != nil {
-		return buf.String(), fmt.Errorf("%s: %w\n%s", cmdline, err, buf.String())
-	}
-	return buf.String(), nil
+	return execute(name+" "+strings.Join(args, " "), name, args, "")
 }
 
 // RunShell runs a command through `bash -c`, for pipelines and redirects.
 func RunShell(script string) (string, error) {
-	CommandLog = append(CommandLog, script)
-	if DryRun {
-		return "", nil
-	}
-	cmd := exec.Command("bash", "-c", script)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
-		return buf.String(), fmt.Errorf("bash -c %q: %w\n%s", script, err, buf.String())
-	}
-	return buf.String(), nil
+	return execute(script, "bash", []string{"-c", script}, "")
 }
 
 // RunInput runs a command feeding the given string to its stdin (e.g. chpasswd).
 // The stdin content is never logged, so it is safe for secrets.
 func RunInput(stdin, name string, args ...string) error {
-	cmdline := name + " " + strings.Join(args, " ")
-	CommandLog = append(CommandLog, strings.TrimSpace(cmdline)+" (stdin hidden)")
+	_, err := execute(name+" "+strings.Join(args, " ")+" (stdin hidden)", name, args, stdin)
+	return err
+}
+
+func execute(logline, name string, args []string, stdin string) (string, error) {
+	CommandLog = append(CommandLog, strings.TrimSpace(logline))
 	if DryRun {
-		return nil
+		return "", nil
 	}
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = strings.NewReader(stdin)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s: %w\n%s", cmdline, err, buf.String())
+
+	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
 	}
-	return nil
+	if LogWriter != nil {
+		fmt.Fprintf(LogWriter, "\n$ %s\n", logline)
+	}
+
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+
+	var buf strings.Builder
+	done := make(chan struct{})
+	go func() {
+		sc := bufio.NewScanner(pr)
+		sc.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+			setActivity(line)
+			if LogWriter != nil {
+				fmt.Fprintln(LogWriter, line)
+			}
+		}
+		close(done)
+	}()
+
+	runErr := cmd.Run()
+	pw.Close()
+	<-done
+	setActivity("")
+
+	if ctx.Err() == context.DeadlineExceeded {
+		return buf.String(), fmt.Errorf("%s: timed out after %s — likely a stuck prompt or lock; see the log", logline, CommandTimeout)
+	}
+	if runErr != nil {
+		return buf.String(), fmt.Errorf("%s: %w\n%s", logline, runErr, tail(buf.String(), 20))
+	}
+	return buf.String(), nil
+}
+
+// tail returns the last n lines of s.
+func tail(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // CommandExists reports whether a binary is on PATH.
