@@ -8,9 +8,6 @@ import (
 	"github.com/mxm-bbv/cli/internal/system"
 )
 
-// TestDryRunAllSteps exercises every step in dry-run mode with all features
-// enabled, asserting that the engine runs clean and emits the expected
-// commands. This verifies the provisioning logic without needing a real host.
 func TestDryRunAllSteps(t *testing.T) {
 	system.DryRun = true
 	system.CommandLog = nil
@@ -35,24 +32,21 @@ func TestDryRunAllSteps(t *testing.T) {
 	}
 
 	log := strings.Join(system.CommandLog, "\n")
-	// Assert on deterministic commands only — package installs and keyring
-	// downloads are idempotent and may be skipped on an already-provisioned
-	// host (like this CI box), which is correct behaviour.
 	wantSubstrings := []string{
-		"apt-get -o DPkg::Lock::Timeout=300 update", // preflight (non-interactive apt)
-		"sources.list.d/docker.list",                // docker apt source (always written)
-		"useradd -m -s /bin/bash deploy",            // deploy user
-		"usermod -aG sudo deploy",                   // sudo group
-		"usermod -aG docker deploy",                 // docker group
-		"ssh-keygen -t ed25519",                     // github key
-		portainerAgentImage,                         // portainer (pinned version)
-		watchtowerImage,                             // watchtower (pinned version)
-		"no-new-privileges",                         // containers hardened
-		"ufw allow 2222/tcp",                        // firewall honours ssh port
-		"jail.d/sshd.local",                         // fail2ban jail
-		"20auto-upgrades",                           // unattended-upgrades config
-		"sshd -t",                                   // sshd validated before restart
-		"systemctl restart ssh",                     // sshd restarted last
+		"apt-get -o DPkg::Lock::Timeout=300 update",
+		"sources.list.d/docker.list",
+		"useradd -m -s /bin/bash deploy",
+		"usermod -aG sudo deploy",
+		"usermod -aG docker deploy",
+		"ssh-keygen -t ed25519",
+		portainerAgentImage,
+		watchtowerImage,
+		"no-new-privileges",
+		"ufw allow 2222/tcp",
+		"jail.d/sshd.local",
+		"20auto-upgrades",
+		"sshd -t",
+		"systemctl restart ssh",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
@@ -60,14 +54,11 @@ func TestDryRunAllSteps(t *testing.T) {
 		}
 	}
 
-	// The deploy password must never appear in the command log.
 	if strings.Contains(log, "s3cret") {
 		t.Fatal("deploy password leaked into command log")
 	}
 }
 
-// TestValidUsernameRejectsInjection ensures crafted usernames can't slip into
-// the shell commands that reference them.
 func TestValidUsernameRejectsInjection(t *testing.T) {
 	good := []string{"deploy", "web_01", "ci-runner", "_svc"}
 	for _, n := range good {
@@ -86,7 +77,6 @@ func TestValidUsernameRejectsInjection(t *testing.T) {
 	}
 }
 
-// TestGitHubUsernameValidation guards the admin-key GitHub fetch path.
 func TestGitHubUsernameValidation(t *testing.T) {
 	for _, n := range []string{"torvalds", "mxm-bbv", "a"} {
 		if !githubUserRe.MatchString(n) {
@@ -100,7 +90,21 @@ func TestGitHubUsernameValidation(t *testing.T) {
 	}
 }
 
-// TestSkipDisabledFeatures verifies that disabling features skips their steps.
+func TestLockoutGuard(t *testing.T) {
+	system.DryRun = false
+	t.Cleanup(func() { system.DryRun = true })
+
+	cfg := config.Default()
+	cfg.Username = "nonexistent_user_xyz"
+	cfg.DisablePassauth = true
+	c := &Context{Cfg: cfg, AdminKeyInstalled: false}
+
+	err := sshHardeningStep().Run(c)
+	if err == nil || !strings.Contains(err.Error(), "locked out") {
+		t.Fatalf("expected lockout guard to refuse, got: %v", err)
+	}
+}
+
 func TestSkipDisabledFeatures(t *testing.T) {
 	system.DryRun = true
 	t.Cleanup(func() { system.DryRun = false })

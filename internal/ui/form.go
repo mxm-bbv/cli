@@ -10,12 +10,8 @@ import (
 	"github.com/mxm-bbv/cli/internal/steps"
 )
 
-// RunForm presents the interactive wizard, mutating and returning cfg. The
-// deploy password is collected here and carried on cfg.DeployPassword (never
-// serialised). askPassword=false skips password prompting (e.g. replay where
-// the user is set up already) — but by default we always ask.
+// RunForm presents the interactive wizard, mutating and returning cfg.
 func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
-	// String/int shims for huh inputs.
 	swap := strconv.Itoa(cfg.SwapGB)
 	port := strconv.Itoa(cfg.SSHPort)
 	pw, pw2 := "", ""
@@ -47,15 +43,14 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	}
 
 	groups = append(groups,
-		// Admin login key.
 		huh.NewGroup(
 			huh.NewNote().Title("Your SSH access").
 				Description("How should we install YOUR public key so you can log in as the deploy user?"),
 			huh.NewSelect[string]().Title("Admin key source").Value(&src).
 				Options(
+					huh.NewOption("Fetch from github.com/<user>.keys", string(config.AdminKeyGitHub)),
 					huh.NewOption("Paste the public key", string(config.AdminKeyPaste)),
 					huh.NewOption("Read from a local file path", string(config.AdminKeyFile)),
-					huh.NewOption("Fetch from github.com/<user>.keys", string(config.AdminKeyGitHub)),
 					huh.NewOption("Skip (I'll set it up myself)", string(config.AdminKeySkip)),
 				),
 		),
@@ -65,14 +60,12 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 				Value(&cfg.AdminKeyValue),
 		).WithHideFunc(func() bool { return src == string(config.AdminKeySkip) }),
 
-		// GitHub deploy key.
 		huh.NewGroup(
 			huh.NewConfirm().Title("Generate an ed25519 key for cloning private GitHub repos?").
 				Value(&cfg.GenerateGitHubKey),
 			huh.NewInput().Title("Key comment").Value(&cfg.GitHubKeyComment),
 		),
 
-		// Base tuning.
 		huh.NewGroup(
 			huh.NewConfirm().Title("Apply base tuning (hostname, timezone, swap, utils)?").
 				Value(&cfg.EnableBaseTuning),
@@ -82,7 +75,6 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 				Validate(isInt),
 		),
 
-		// Features.
 		huh.NewGroup(
 			huh.NewConfirm().Title("Docker log rotation (daemon.json)?").Value(&cfg.EnableLogRotation),
 			huh.NewConfirm().Title("Install Portainer Agent (:9001)?").Value(&cfg.InstallPortainer),
@@ -91,10 +83,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 			huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
 		),
 
-		// SSH hardening — the dangerous bits, asked explicitly.
 		huh.NewGroup(
 			huh.NewNote().Title("⚠  SSH hardening").
-				Description("These can lock you out if your key isn't working. They run LAST, after sshd -t validation."),
+				Description("These run LAST. forge refuses to disable password auth unless a key is installed, and validates sshd -t before restart — so you can't lock yourself out."),
 			huh.NewInput().Title("SSH port").Value(&port).Validate(isInt),
 			huh.NewConfirm().Title("Disable root login over SSH?").Value(&cfg.DisableRootLogin),
 			huh.NewConfirm().Title("Disable password authentication (key-only)?").Value(&cfg.DisablePassauth),
@@ -106,7 +97,6 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		return cfg, err
 	}
 
-	// Commit shims back into the typed config.
 	cfg.AdminKeySource = config.AdminKeySource(src)
 	cfg.SwapGB = atoiOr(swap, cfg.SwapGB)
 	cfg.SSHPort = atoiOr(port, cfg.SSHPort)
@@ -114,8 +104,7 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	return cfg, nil
 }
 
-// AskPassword prompts only for the deploy user's password (used in --config
-// replay, where the rest of the answers come from a file).
+// AskPassword prompts only for the deploy user's password (used in --config replay).
 func AskPassword(username string) (string, error) {
 	pw, pw2 := "", ""
 	form := huh.NewForm(huh.NewGroup(
