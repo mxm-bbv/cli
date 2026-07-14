@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/mxm-bbv/cli/internal/audit"
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/system"
@@ -19,6 +20,12 @@ import (
 const version = "0.1.0"
 
 func main() {
+	// Subcommands (before flag parsing): `forge audit` — read-only IOC and
+	// exposure scan of this host.
+	if len(os.Args) > 1 && os.Args[1] == "audit" {
+		os.Exit(audit.Run())
+	}
+
 	var (
 		dryRun    = flag.Bool("dry-run", false, "print the actions without changing anything")
 		cfgPath   = flag.String("config", "", "load wizard answers from a YAML file (non-interactive)")
@@ -111,6 +118,14 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 			return cfg, err
 		}
 		cfg.DeployPassword = pw
+		// Secrets are never serialised — the tailnet auth key is re-prompted.
+		if cfg.InstallPortainer && cfg.PortainerAccess == config.PortainerTailnet {
+			key, err := ui.AskSecret("Tailscale auth key (empty if this box already joined)")
+			if err != nil {
+				return cfg, err
+			}
+			cfg.TailscaleAuthKey = key
+		}
 		return cfg, nil
 	}
 	return ui.RunForm(config.Default(), true)

@@ -8,6 +8,8 @@ import "github.com/mxm-bbv/cli/internal/config"
 type Context struct {
 	Cfg          config.Config
 	GitHubPubKey string // populated by the ssh step when a key is generated
+	TailnetIP    string // populated by the tailscale step
+	AgentSecret  string // AGENT_SECRET for pairing the Portainer Agent (shown once)
 	Notes        []string
 }
 
@@ -32,10 +34,12 @@ func BuildSteps(cfg config.Config) ([]Step, *Context) {
 		logRotationStep(),
 		userStep(),
 		sshKeysStep(),
+		tailscaleStep(), // before portainer: the agent binds to the tailnet IP
 		portainerStep(),
 		watchtowerStep(),
 		firewallStep(),
 		fail2banStep(),
+		dockerUserFirewallStep(), // containers must respect the firewall too
 		autoUpdatesStep(),
 		sshHardeningStep(), // last: closes root / password login
 	}

@@ -24,10 +24,18 @@ const (
 	// Used to verify ssh-keyscan output instead of blindly trusting it (TOFU).
 	githubHostKeyFP = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
 
+	// tailscaleGPGFingerprint is Tailscale's apt signing key fingerprint,
+	// computed from https://pkgs.tailscale.com/stable/<os>/<codename>.asc
+	// (identical for Ubuntu and Debian). Same fail-closed rule as Docker's key.
+	tailscaleGPGFingerprint = "2596A99EAAB33821893C0A79458CA832957F5868"
+
 	// Container images are pinned to specific, immutable version tags — never
 	// ":latest" — so a repushed tag can't swap the image out from under us.
 	// To pin even harder, append an @sha256:<digest> after verifying it.
-	portainerAgentImage = "portainer/agent:2.21.5"
+	//
+	// The agent version must stay in lockstep with your Portainer Server
+	// (same major.minor, server not older) — bump both together.
+	portainerAgentImage = "portainer/agent:2.39.1"
 	watchtowerImage     = "containrrr/watchtower:1.7.1"
 )
 
@@ -48,21 +56,25 @@ func ValidUsername(name string) error {
 // simple; this is defence-in-depth alongside shell-free execution anyway.
 var githubUserRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 
-// verifyDockerKey checks that the downloaded Docker apt key matches the pinned
-// fingerprint, deleting it and erroring out on any mismatch.
-func verifyDockerKey(path string) error {
+// verifyKeyFingerprint checks that a downloaded keyring (armored or binary)
+// matches the pinned fingerprint, deleting it and erroring out on any mismatch.
+func verifyKeyFingerprint(path, fingerprint, label string) error {
 	if system.DryRun {
 		return nil
 	}
 	out, err := system.Run("gpg", "--show-keys", "--with-colons", path)
 	if err != nil {
-		return fmt.Errorf("verify docker key: %w", err)
+		return fmt.Errorf("verify %s key: %w", label, err)
 	}
-	if !strings.Contains(strings.ToUpper(out), dockerGPGFingerprint) {
+	if !strings.Contains(strings.ToUpper(out), fingerprint) {
 		_ = os.Remove(path)
-		return fmt.Errorf("Docker GPG key fingerprint mismatch — refusing to trust %s (expected %s)", path, dockerGPGFingerprint)
+		return fmt.Errorf("%s GPG key fingerprint mismatch — refusing to trust %s (expected %s)", label, path, fingerprint)
 	}
 	return nil
+}
+
+func verifyDockerKey(path string) error {
+	return verifyKeyFingerprint(path, dockerGPGFingerprint, "Docker")
 }
 
 // verifiedGitHubHostKey runs ssh-keyscan, verifies the ed25519 host key against

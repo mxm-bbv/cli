@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/system"
 )
@@ -192,9 +193,25 @@ func Summary(ctx *steps.Context, dryRun bool) string {
 			onOff(!cfg.DisableRootLogin), onOff(!cfg.DisablePassauth)),
 	}
 	if cfg.InstallPortainer {
-		rows = append(rows, fmt.Sprintf("%s  %s:9001", StyleKey.Render("Portainer Agent:"), system.PrimaryIP()))
+		if cfg.PortainerAccess == config.PortainerTailnet {
+			ip := ctx.TailnetIP
+			if ip == "" {
+				ip = "<tailnet-ip>"
+			}
+			rows = append(rows, fmt.Sprintf("%s  %s:9001 %s", StyleKey.Render("Portainer Agent:"),
+				ip, StyleOK.Render("(tailnet only — invisible to the internet)")))
+		} else {
+			rows = append(rows, fmt.Sprintf("%s  %s:9001 %s", StyleKey.Render("Portainer Agent:"),
+				system.PrimaryIP(), StyleWarn.Render("(PUBLIC — protected only by AGENT_SECRET)")))
+		}
 	}
 	b.WriteString(StyleBox.Render(strings.Join(rows, "\n")) + "\n")
+
+	if cfg.InstallPortainer && ctx.AgentSecret != "" {
+		b.WriteString("\n" + StyleTitle.Render("  Portainer AGENT_SECRET") +
+			StyleMuted.Render("  — enter it when adding this endpoint in Portainer (shown only once):") + "\n")
+		b.WriteString(StyleBox.Render(ctx.AgentSecret) + "\n")
+	}
 
 	if ctx.GitHubPubKey != "" {
 		b.WriteString("\n" + StyleTitle.Render("  GitHub deploy key") +

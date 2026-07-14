@@ -39,6 +39,44 @@ func Run(name string, args ...string) (string, error) {
 	return buf.String(), nil
 }
 
+// RunRedacted executes name/args like Run but records logline in CommandLog
+// instead of the real command line, so secrets passed as arguments never reach
+// the log (dry-run output, tests, summaries).
+func RunRedacted(logline, name string, args ...string) (string, error) {
+	CommandLog = append(CommandLog, logline)
+	if DryRun {
+		return "", nil
+	}
+	cmd := exec.Command(name, args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("%s: %w\n%s", logline, err, buf.String())
+	}
+	return buf.String(), nil
+}
+
+// RunEnv executes like Run but with extra KEY=VALUE entries appended to the
+// environment. The values never appear in CommandLog, so it is safe for
+// secrets consumed via env (e.g. `docker run -e KEY` without a value).
+func RunEnv(env []string, name string, args ...string) (string, error) {
+	cmdline := name + " " + strings.Join(args, " ")
+	CommandLog = append(CommandLog, strings.TrimSpace(cmdline))
+	if DryRun {
+		return "", nil
+	}
+	cmd := exec.Command(name, args...)
+	cmd.Env = append(os.Environ(), env...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return buf.String(), fmt.Errorf("%s: %w\n%s", cmdline, err, buf.String())
+	}
+	return buf.String(), nil
+}
+
 // RunShell runs a command through `bash -c`, for pipelines and redirects.
 func RunShell(script string) (string, error) {
 	CommandLog = append(CommandLog, script)

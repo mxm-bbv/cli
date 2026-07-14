@@ -7,6 +7,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// PortainerAccess selects how the Portainer Agent is reachable. A publicly
+// published agent (0.0.0.0:9001) is a known root-compromise vector, so the
+// default binds it to the Tailscale interface only.
+type PortainerAccess string
+
+const (
+	PortainerTailnet PortainerAccess = "tailnet" // bound to the Tailscale IP only
+	PortainerPublic  PortainerAccess = "public"  // bound to 0.0.0.0 — discouraged
+)
+
 // AdminKeySource describes how the administrator's public key is obtained.
 type AdminKeySource string
 
@@ -44,15 +54,22 @@ type Config struct {
 	DisablePassauth  bool `yaml:"disable_password_auth"`
 
 	// Optional feature toggles
-	EnableFirewall    bool `yaml:"enable_firewall"`     // UFW + fail2ban
+	EnableFirewall    bool `yaml:"enable_firewall"`     // UFW + fail2ban + DOCKER-USER
 	EnableAutoUpdates bool `yaml:"enable_auto_updates"` // unattended-upgrades
 	EnableBaseTuning  bool `yaml:"enable_base_tuning"`  // hostname/tz/swap/utils
 	EnableLogRotation bool `yaml:"enable_log_rotation"` // docker daemon.json
 	InstallPortainer  bool `yaml:"install_portainer"`
 	InstallWatchtower bool `yaml:"install_watchtower"`
 
+	// Portainer Agent exposure (see PortainerAccess). TailscaleSSH additionally
+	// enables `tailscale up --ssh` so the box stays reachable from the tailnet
+	// (e.g. a phone) even if sshd or Portainer are down.
+	PortainerAccess PortainerAccess `yaml:"portainer_access"`
+	TailscaleSSH    bool            `yaml:"tailscale_ssh"`
+
 	// Runtime-only (not serialised)
-	DeployPassword string `yaml:"-"`
+	DeployPassword   string `yaml:"-"`
+	TailscaleAuthKey string `yaml:"-"` // secret: prompted, never written to disk
 }
 
 // Default returns a Config pre-filled with sensible defaults.
@@ -73,6 +90,8 @@ func Default() Config {
 		EnableLogRotation: true,
 		InstallPortainer:  true,
 		InstallWatchtower: false,
+		PortainerAccess:   PortainerTailnet,
+		TailscaleSSH:      true,
 	}
 }
 
