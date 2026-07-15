@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -68,6 +69,10 @@ func main() {
 
 	system.DryRun = *dryRun
 
+	// Full transcript of every command → a log file, so nothing is hidden and a
+	// failed run can be diagnosed after the fact.
+	logPath := openLog(*dryRun)
+
 	fmt.Print(ui.Banner(version))
 
 	// Privilege & OS checks.
@@ -110,7 +115,7 @@ func main() {
 
 	// Execute.
 	st, ctx := steps.BuildSteps(cfg)
-	model := ui.NewRunner(st, ctx)
+	model := ui.NewRunner(st, ctx, logPath)
 	prog := tea.NewProgram(model)
 	final, err := prog.Run()
 	if err != nil {
@@ -120,15 +125,34 @@ func main() {
 
 	rm := final.(ui.RunnerModel)
 	if rm.Failed {
-		fmt.Println(ui.StyleErr.Render("\n  A step failed — see the error above. Nothing further was applied."))
+		fmt.Println(ui.StyleErr.Render("\n  Aborted with a failed step. Full log: " + logPath))
 		os.Exit(1)
 	}
 
-	fmt.Println("\n" + ui.Summary(ctx, *dryRun))
+	fmt.Println("\n" + ui.Summary(ctx, *dryRun, logPath))
 
 	if *dryRun {
 		fmt.Println(ui.StyleMuted.Render(fmt.Sprintf("  [dry-run] %d commands would have run.", len(system.CommandLog))))
 	}
+}
+
+// openLog creates the transcript file and wires it into the system package.
+// Best-effort: if it can't be created, we carry on without a log.
+func openLog(dryRun bool) string {
+	if dryRun {
+		return ""
+	}
+	dir := "/var/log"
+	if !system.IsRoot() {
+		dir = os.TempDir()
+	}
+	path := filepath.Join(dir, "forge.log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return ""
+	}
+	system.LogWriter = f
+	return path
 }
 
 // gatherConfig either loads a YAML config (prompting only for the password) or

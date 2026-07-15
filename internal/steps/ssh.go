@@ -39,7 +39,11 @@ func sshKeysStep() Step {
 							return err
 						}
 					}
+					c.AdminKeyInstalled = true
 				}
+			}
+			if hasAuthorizedKey(sshDir + "/authorized_keys") {
+				c.AdminKeyInstalled = true
 			}
 
 			// 2. Generate an ed25519 key for cloning private GitHub repos.
@@ -51,15 +55,13 @@ func sshKeysStep() Step {
 						return err
 					}
 				}
-				// Read the public key for the final summary.
 				if pub, err := os.ReadFile(keyPath + ".pub"); err == nil {
 					c.GitHubPubKey = strings.TrimSpace(string(pub))
 				} else if system.DryRun {
 					c.GitHubPubKey = "<generated on real run — paste into GitHub → Deploy keys>"
 				}
 
-				// 3. known_hosts for github.com — verified against GitHub's pinned
-				//    fingerprint instead of blindly trusting ssh-keyscan (TOFU).
+				// 3. known_hosts for github.com — verified against the pinned FP.
 				kh := sshDir + "/known_hosts"
 				if !system.FileContains(kh, "github.com") {
 					entry, err := verifiedGitHubHostKey()
@@ -107,10 +109,12 @@ func resolveAdminKey(cfg config.Config) (string, error) {
 		if !githubUserRe.MatchString(user) {
 			return "", fmt.Errorf("%q is not a valid GitHub username", user)
 		}
-		// exec curl (no shell) so the username can never inject a command.
 		out, err := system.Run("curl", "-fsSL", "https://github.com/"+user+".keys")
 		if err != nil {
 			return "", fmt.Errorf("fetch github keys for %q: %w", user, err)
+		}
+		if strings.TrimSpace(out) == "" {
+			return "", fmt.Errorf("github.com/%s.keys returned no keys — is your public key added to that account?", user)
 		}
 		return strings.TrimSpace(out), nil
 	default:

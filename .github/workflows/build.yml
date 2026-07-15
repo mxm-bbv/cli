@@ -1,0 +1,54 @@
+name: build-binaries
+
+# Builds forge on every push to main (and on demand) and publishes the compiled
+# binaries to an orphan `dist` branch. The server pulls that branch to update —
+# no compiling on the server, repo stays private, and `dist` is force-updated so
+# history doesn't grow.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "deploy/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Vet & test
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build binaries
+        run: |
+          mkdir -p out
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
+              go build -ldflags "-s -w" -o out/forge-linux-$arch .
+            sha256sum out/forge-linux-$arch | awk '{print $1}' > out/forge-linux-$arch.sha256
+          done
+          ( cd out && sha256sum forge-linux-amd64 forge-linux-arm64 > checksums.txt )
+
+      - name: Publish to dist branch (force)
+        run: |
+          cd out
+          git init -q
+          git config user.name  "forge-ci"
+          git config user.email "ci@users.noreply.github.com"
+          git checkout -q -b dist
+          git add -A
+          git commit -q -m "build ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" dist

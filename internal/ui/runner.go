@@ -29,26 +29,29 @@ type stepState struct {
 	err    error
 }
 
-// stepDoneMsg is emitted after a step finishes.
 type stepDoneMsg struct {
 	index  int
 	status status
 	err    error
 }
 
-// RunnerModel drives sequential execution of the provisioning steps.
+// RunnerModel drives sequential execution of the provisioning steps, with a
+// live output line, and a retry/skip/abort prompt when a step fails.
 type RunnerModel struct {
-	steps   []steps.Step
-	ctx     *steps.Context
-	states  []stepState
-	spinner spinner.Model
-	current int
-	Failed  bool
-	done    bool
+	steps    []steps.Step
+	ctx      *steps.Context
+	states   []stepState
+	spinner  spinner.Model
+	current  int
+	paused   bool // waiting for the user to decide on a failed step
+	pausedAt int
+	Failed   bool
+	done     bool
+	logPath  string
 }
 
 // NewRunner builds a runner model for the given steps and shared context.
-func NewRunner(st []steps.Step, ctx *steps.Context) RunnerModel {
+func NewRunner(st []steps.Step, ctx *steps.Context, logPath string) RunnerModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(ColorEmber)
@@ -57,14 +60,13 @@ func NewRunner(st []steps.Step, ctx *steps.Context) RunnerModel {
 	for i, s := range st {
 		states[i] = stepState{name: s.Name, status: statusPending}
 	}
-	return RunnerModel{steps: st, ctx: ctx, states: states, spinner: sp, current: 0}
+	return RunnerModel{steps: st, ctx: ctx, states: states, spinner: sp, logPath: logPath}
 }
 
 func (m RunnerModel) Init() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, m.runStep(0))
 }
 
-// runStep returns a command that executes step i in the background.
 func (m RunnerModel) runStep(i int) tea.Cmd {
 	if i >= len(m.steps) {
 		return nil
@@ -85,8 +87,33 @@ func (m RunnerModel) runStep(i int) tea.Cmd {
 func (m RunnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.paused {
+			switch strings.ToLower(msg.String()) {
+			case "r": // retry the failed step
+				m.states[m.pausedAt] = stepState{name: m.states[m.pausedAt].name, status: statusRunning}
+				m.paused = false
+				m.current = m.pausedAt
+				return m, m.runStep(m.pausedAt)
+			case "s": // skip and continue
+				m.states[m.pausedAt].status = statusSkip
+				m.paused = false
+				next := m.pausedAt + 1
+				m.current = next
+				if next >= len(m.steps) {
+					m.done = true
+					return m, tea.Quit
+				}
+				return m, m.runStep(next)
+			case "q", "ctrl+c":
+				m.Failed = true
+				m.done = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if msg.Type == tea.KeyCtrlC {
 			m.Failed = true
+			m.done = true
 			return m, tea.Quit
 		}
 	case spinner.TickMsg:
@@ -97,9 +124,10 @@ func (m RunnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.states[msg.index].status = msg.status
 		m.states[msg.index].err = msg.err
 		if msg.status == statusErr {
-			m.Failed = true
-			m.done = true
-			return m, tea.Quit
+			// Pause and let the user decide instead of dying silently.
+			m.paused = true
+			m.pausedAt = msg.index
+			return m, nil
 		}
 		next := msg.index + 1
 		m.current = next
@@ -107,11 +135,11 @@ func (m RunnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.done = true
 			return m, tea.Quit
 		}
+		m.states[next].status = statusRunning
 		return m, m.runStep(next)
 	}
-	// keep the spinner ticking
-	if !m.done {
-		m.states[clamp(m.current, len(m.states))].status = statusRunning
+	if !m.done && !m.paused && m.current < len(m.states) {
+		m.states[m.current].status = statusRunning
 	}
 	return m, nil
 }
@@ -124,46 +152,45 @@ func (m RunnerModel) View() string {
 		var icon, name string
 		switch s.status {
 		case statusOK:
-			icon = StyleOK.Render(IconOK)
-			name = s.name
+			icon, name = StyleOK.Render(IconOK), s.name
 		case statusSkip:
 			icon = StyleMuted.Render(IconSkip)
-			name = StyleMuted.Render(s.name + "  (already done / disabled)")
+			name = StyleMuted.Render(s.name + "  (already done / skipped)")
 		case statusErr:
-			icon = StyleErr.Render(IconErr)
-			name = StyleErr.Render(s.name)
+			icon, name = StyleErr.Render(IconErr), StyleErr.Render(s.name)
 		case statusRunning:
-			icon = m.spinner.View()
-			name = StyleKey.Render(s.name)
+			icon, name = m.spinner.View(), StyleKey.Render(s.name)
 		default:
-			icon = StyleMuted.Render("·")
-			name = StyleMuted.Render(s.name)
+			icon, name = StyleMuted.Render("·"), StyleMuted.Render(s.name)
 		}
 		b.WriteString(fmt.Sprintf("  %s  %s\n", icon, name))
-	}
 
-	if m.done {
-		b.WriteString("\n")
-		if m.Failed {
-			for _, s := range m.states {
-				if s.status == statusErr && s.err != nil {
-					b.WriteString(StyleErr.Render("  ✗ "+s.name) + "\n")
-					b.WriteString(StyleMuted.Render(indent(s.err.Error())) + "\n")
-				}
+		if s.status == statusRunning {
+			if act := system.Activity(); act != "" {
+				b.WriteString("       " + StyleMuted.Render(truncate(act, 76)) + "\n")
 			}
 		}
+	}
+
+	if m.paused {
+		b.WriteString("\n" + StyleErr.Render("  ✗ "+m.states[m.pausedAt].name+" failed:") + "\n")
+		if e := m.states[m.pausedAt].err; e != nil {
+			b.WriteString(StyleMuted.Render(indent(e.Error())) + "\n")
+		}
+		b.WriteString("\n  " + StyleWarn.Render("[r]") + " retry   " +
+			StyleWarn.Render("[s]") + " skip   " +
+			StyleWarn.Render("[q]") + " quit    " +
+			StyleMuted.Render("(full log: "+m.logPath+")") + "\n")
 	}
 	return b.String()
 }
 
-func clamp(i, n int) int {
-	if i < 0 {
-		return 0
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		return s[:n-1] + "…"
 	}
-	if i >= n {
-		return n - 1
-	}
-	return i
+	return s
 }
 
 func indent(s string) string {
@@ -175,7 +202,7 @@ func indent(s string) string {
 }
 
 // Summary renders the post-run report (printed by main after the program exits).
-func Summary(ctx *steps.Context, dryRun bool) string {
+func Summary(ctx *steps.Context, dryRun bool, logPath string) string {
 	cfg := ctx.Cfg
 	var b strings.Builder
 
@@ -215,7 +242,7 @@ func Summary(ctx *steps.Context, dryRun bool) string {
 
 	if ctx.GitHubPubKey != "" {
 		b.WriteString("\n" + StyleTitle.Render("  GitHub deploy key") +
-			StyleMuted.Render("  — add this to repo → Settings → Deploy keys:") + "\n")
+			StyleMuted.Render("  — add to repo → Settings → Deploy keys:") + "\n")
 		b.WriteString(StyleBox.Render(ctx.GitHubPubKey) + "\n")
 	}
 
@@ -235,6 +262,10 @@ func Summary(ctx *steps.Context, dryRun bool) string {
 			"doesn't work, fix it from THIS still-open session.",
 		}, "\n")
 		b.WriteString("\n" + StyleWarnBox.Render(warn) + "\n")
+	}
+
+	if logPath != "" {
+		b.WriteString("\n" + StyleMuted.Render("  Full log: "+logPath) + "\n")
 	}
 	return b.String()
 }

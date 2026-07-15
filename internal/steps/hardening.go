@@ -19,6 +19,19 @@ func sshHardeningStep() Step {
 		},
 		Run: func(c *Context) error {
 			cfg := c.Cfg
+
+			// Lockout guard: never disable password auth unless the deploy user
+			// actually has a working key, so we can't cut off access.
+			if cfg.DisablePassauth && !system.DryRun {
+				ak := cfg.HomeDir() + "/.ssh/authorized_keys"
+				if !c.AdminKeyInstalled && !hasAuthorizedKey(ak) {
+					return fmt.Errorf(
+						"refusing to disable password auth: %s has no SSH key in %s — you would be locked out.\n"+
+							"      Re-run and choose Fetch/Paste for your admin key, or answer 'No' to disabling password auth.",
+						cfg.Username, ak)
+				}
+			}
+
 			if err := system.BackupFile(sshdConfigPath); err != nil {
 				return err
 			}

@@ -53,7 +53,7 @@ func dockerStep() Step {
 			}
 
 			// 3. Install packages.
-			if _, err := system.Run("apt-get", "update", "-y"); err != nil {
+			if _, err := aptGet("update", "-y"); err != nil {
 				return err
 			}
 			if err := aptInstall(
