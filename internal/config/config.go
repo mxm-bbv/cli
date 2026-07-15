@@ -67,9 +67,19 @@ type Config struct {
 	PortainerAccess PortainerAccess `yaml:"portainer_access"`
 	TailscaleSSH    bool            `yaml:"tailscale_ssh"`
 
+	// Telegram alerts: a daily audit sweep, host-health thresholds, and SSH
+	// logins are pushed to a Telegram chat. The bot token is a secret and is
+	// never serialised; the chat ID is not sensitive.
+	EnableAlerts     bool   `yaml:"enable_alerts"`
+	AlertsChatID     string `yaml:"alerts_chat_id"`
+	AlertOnSSHLogin  bool   `yaml:"alert_on_ssh_login"`
+	AlertLoadPerCPU  int    `yaml:"alert_load_per_cpu"` // sustained load/CPU % to warn at (default 90)
+	AlertDiskPercent int    `yaml:"alert_disk_percent"` // root fs usage % to warn at (default 85)
+
 	// Runtime-only (not serialised)
 	DeployPassword   string `yaml:"-"`
 	TailscaleAuthKey string `yaml:"-"` // secret: prompted, never written to disk
+	TelegramBotToken string `yaml:"-"` // secret: prompted, never written to disk
 }
 
 // Default returns a Config pre-filled with sensible defaults.
@@ -92,6 +102,10 @@ func Default() Config {
 		InstallWatchtower: false,
 		PortainerAccess:   PortainerTailnet,
 		TailscaleSSH:      true,
+		EnableAlerts:      false,
+		AlertOnSSHLogin:   true,
+		AlertLoadPerCPU:   90,
+		AlertDiskPercent:  85,
 	}
 }
 

@@ -16,6 +16,7 @@ deliberate, reviewable act.
 | Docker apt key fingerprint | `9DC858229FC7DD38854AE2D88D81803C0EBFCD88` | docs.docker.com |
 | Tailscale apt key fingerprint | `2596A99EAAB33821893C0A79458CA832957F5868` | pkgs.tailscale.com |
 | GitHub host key (ed25519) | `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` | docs.github.com |
+| forge release minisign key | `RWSk3LOux6EkxZOpVER2fnvn2WKOHPBPG128iEhEy3JGztPOte98a+3C` | this repo (`pins.go`) |
 | Portainer Agent image | `portainer/agent:2.39.1` (keep in lockstep with your Portainer Server) | Docker Hub |
 | Watchtower image | `containrrr/watchtower:1.7.1` | Docker Hub |
 
@@ -57,6 +58,20 @@ deliberate, reviewable act.
 - **Released binaries** — the `install.sh` / self-hosted `deploy/cli.sh`
   installers download `checksums.txt` (or `.sha256`) and **fail closed** unless
   the SHA256 matches. Override only with `FORGE_ALLOW_UNVERIFIED=1`.
+- **Release signatures (minisign)** — the release workflow signs `checksums.txt`
+  with a passwordless minisign key (private key in the `MINISIGN_KEY` repo
+  secret, never in the tree). `forge update` verifies that signature **in
+  process** against the pinned public key before trusting the checksums or
+  installing the binary — so an attacker who swaps the binary *and* its checksum
+  in a compromised release still can't forge the signature. `install.sh` also
+  verifies opportunistically when `minisign` is present. The verifier
+  (`internal/update/minisign.go`) supports minisign's prehashed (BLAKE2b-512)
+  format and depends only on the Go standard library plus `x/crypto/blake2b`.
+- **Telegram alerts** — push-only over HTTPS to `api.telegram.org`; nothing
+  listens. The bot token lives in `/etc/forge/alerts.env` (mode 0600) and is
+  never serialised to the reusable YAML config or written to the command log.
+  The SSH-login notice is wired through `/etc/ssh/sshrc` (backgrounded,
+  best-effort) rather than PAM, so a failure there can never block a login.
 - **No command injection** — the deploy username is validated against a strict
   regex (`ValidUsername`) before it flows into any command, the GitHub username
   for key fetching is regex-validated, and both use `exec` (no shell). Secrets

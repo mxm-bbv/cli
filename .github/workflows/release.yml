@@ -24,6 +24,12 @@ permissions:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    env:
+      # Set repo secret MINISIGN_KEY to the passwordless minisign secret key
+      # (the whole two-line forge-release.key file) to sign releases. Absent →
+      # the signing step is skipped and forge update falls back to checksum-only
+      # (with --allow-unsigned).
+      MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,6 +52,16 @@ jobs:
           done
           ( cd dist && sha256sum forge-* > checksums.txt )
 
+      - name: Sign checksums (minisign)
+        if: ${{ env.MINISIGN_KEY != '' }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y minisign
+          printf '%s\n' "$MINISIGN_KEY" > /tmp/forge.key
+          # Passwordless key: minisign reads no passphrase.
+          minisign -S -s /tmp/forge.key -m dist/checksums.txt
+          rm -f /tmp/forge.key
+          ls -l dist/checksums.txt.minisig
+
       - name: Resolve tag
         id: tag
         run: |
@@ -63,4 +79,6 @@ jobs:
             dist/forge-linux-amd64
             dist/forge-linux-arm64
             dist/checksums.txt
+            dist/checksums.txt.minisig
           generate_release_notes: true
+          fail_on_unmatched_files: false

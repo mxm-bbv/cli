@@ -16,6 +16,11 @@ BIN="forge"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${FORGE_VERSION:-latest}"
 
+# forge's minisign public key. If `minisign` is installed, the release's
+# signature is verified against it; otherwise the SHA256 check below is the
+# floor (and `forge update` later verifies the signature in-process).
+FORGE_PUBKEY="RWSk3LOux6EkxZOpVER2fnvn2WKOHPBPG128iEhEy3JGztPOte98a+3C"
+
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 ok()   { printf '\033[32m%s\033[0m\n' "$*"; }
 info() { printf '\033[36m%s\033[0m\n' "$*"; }
@@ -60,6 +65,18 @@ else
   SUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
 fi
 if curl -fsSL "$SUMS_URL" -o "$SUMS" 2>/dev/null; then
+  # Opportunistic signature check: if minisign is present, verify checksums.txt
+  # before trusting it. Fail closed only when a signature exists but is invalid.
+  if command -v minisign >/dev/null 2>&1; then
+    SIG="$(mktemp)"; trap 'rm -f "$TMP" "$SUMS" "$SIG"' EXIT
+    if curl -fsSL "${SUMS_URL}.minisig" -o "$SIG" 2>/dev/null; then
+      if minisign -Vm "$SUMS" -x "$SIG" -P "$FORGE_PUBKEY" >/dev/null 2>&1; then
+        ok "Release signature verified (minisign)"
+      else
+        red "minisign signature verification FAILED for checksums.txt — aborting."; exit 1
+      fi
+    fi
+  fi
   EXPECTED="$(awk -v f="$ASSET" '$2==f || $2=="*"f {print $1}' "$SUMS" | head -n1)"
   if [ -z "$EXPECTED" ]; then
     red "No checksum for ${ASSET} in checksums.txt — refusing to run."; exit 1

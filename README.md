@@ -27,8 +27,21 @@ production-ready host in one pass — no runtime, no dependencies on the server.
 | **Hardening** | `sshd`: disable root login, key-only auth, optional port change, `AllowUsers` — validated with `sshd -t` before restart |
 | **Firewall** | UFW (allow SSH/80/443) + fail2ban SSH jail + **DOCKER-USER rules** so published container ports can't bypass UFW |
 | **Updates** | unattended-upgrades for automatic security patches |
+| **Alerts**  | Telegram push (optional): daily `forge audit`, host-health warnings (load/disk/reboot), SSH-login notices |
 | **Base**    | hostname, timezone, NTP, swap file, operator utilities (htop, ncdu, jq, tmux…) |
 | **Audit**   | `sudo forge audit` — read-only scan for rootkit/proxyjacking IOCs and risky Docker exposure |
+
+## Day-2 commands
+
+Beyond the provisioning wizard, `forge` doubles as an operations tool:
+
+| Command | What it does |
+|---------|--------------|
+| `sudo forge audit` | Read-only compromise & exposure scan (IOCs, public ports, floating tags, `/` mounts, docker.sock, UFW bypass). Exit 2 = critical. `--quiet` prints only findings |
+| `forge status` | One-glance summary: Docker, agent exposure, firewall, tailnet, alert timers, swap |
+| `forge lint <compose.yml>` | Static-check a Compose file **before** deploy for the same risky settings |
+| `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
+| `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |
 
 Every step is **idempotent** — re-running skips what's already done. SSH
 hardening always runs **last**, so the box stays reachable until everything
@@ -111,6 +124,8 @@ for the full picture. In short:
 - Preview everything first: `forge --dry-run` prints every command and changes nothing.
 - Check a running box any time: `sudo forge audit` scans for rootkit/proxyjacking
   IOCs and risky Docker exposure without changing anything.
+- Releases are **minisign-signed**; `forge update` verifies the signature in-process
+  (not just a checksum from the same host that could be swapped alongside it).
 
 ## Layout
 

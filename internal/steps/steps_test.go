@@ -24,6 +24,9 @@ func TestDryRunAllSteps(t *testing.T) {
 	cfg.InstallWatchtower = true
 	cfg.DeployPassword = "s3cret"
 	cfg.TailscaleAuthKey = "tskey-auth-TESTONLY"
+	cfg.EnableAlerts = true
+	cfg.AlertsChatID = "123456"
+	cfg.TelegramBotToken = "bot-TESTONLY"
 
 	st, ctx := BuildSteps(cfg)
 	for _, s := range st {
@@ -57,6 +60,9 @@ func TestDryRunAllSteps(t *testing.T) {
 		"ufw allow in on tailscale0",             // tailnet is a trusted admin interface
 		"jail.d/sshd.local",                      // fail2ban jail
 		"forge-docker-user.service",              // DOCKER-USER rules (docker can't bypass UFW)
+		"forge-audit.timer",                      // scheduled audit -> Telegram
+		"forge-health.timer",                     // scheduled health checks
+		"alerts.env",                             // secret alert config written
 		"20auto-upgrades",                        // unattended-upgrades config
 		"sshd -t",                                // sshd validated before restart
 		"systemctl restart ssh",                  // sshd restarted last
@@ -73,6 +79,9 @@ func TestDryRunAllSteps(t *testing.T) {
 	}
 	if strings.Contains(log, "tskey-auth-TESTONLY") {
 		t.Fatal("tailscale auth key leaked into command log")
+	}
+	if strings.Contains(log, "bot-TESTONLY") {
+		t.Fatal("telegram bot token leaked into command log")
 	}
 	if ctx.AgentSecret == "" {
 		t.Fatal("expected an AGENT_SECRET to be generated")
@@ -163,6 +172,7 @@ func TestSkipDisabledFeatures(t *testing.T) {
 	cfg.InstallPortainer = false
 	cfg.InstallWatchtower = false
 	cfg.EnableAutoUpdates = false
+	cfg.EnableAlerts = false
 
 	st, ctx := BuildSteps(cfg)
 	skipped := map[string]bool{}
@@ -178,6 +188,7 @@ func TestSkipDisabledFeatures(t *testing.T) {
 		"Portainer Agent",
 		"Watchtower (monitor-only update checks)",
 		"Unattended security upgrades",
+		"Telegram alerts: daily audit, health & SSH-login pushes",
 	} {
 		if !skipped[name] {
 			t.Errorf("expected step %q to be skipped when its feature is disabled", name)

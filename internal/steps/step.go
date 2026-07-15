@@ -41,6 +41,7 @@ func BuildSteps(cfg config.Config) ([]Step, *Context) {
 		fail2banStep(),
 		dockerUserFirewallStep(), // containers must respect the firewall too
 		autoUpdatesStep(),
+		alertsStep(),       // detection: Telegram push for audit/health/logins
 		sshHardeningStep(), // last: closes root / password login
 	}
 	return steps, c

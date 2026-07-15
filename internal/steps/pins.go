@@ -29,6 +29,12 @@ const (
 	// (identical for Ubuntu and Debian). Same fail-closed rule as Docker's key.
 	tailscaleGPGFingerprint = "2596A99EAAB33821893C0A79458CA832957F5868"
 
+	// ReleasePubKey is forge's own minisign public key. `forge update` verifies
+	// that a downloaded release's checksums.txt carries a valid signature from
+	// the matching private key before trusting (and installing) any binary.
+	// The private key never leaves the maintainer's machine.
+	ReleasePubKey = "RWSk3LOux6EkxZOpVER2fnvn2WKOHPBPG128iEhEy3JGztPOte98a+3C"
+
 	// Container images are pinned to specific, immutable version tags — never
 	// ":latest" — so a repushed tag can't swap the image out from under us.
 	// To pin even harder, append an @sha256:<digest> after verifying it.

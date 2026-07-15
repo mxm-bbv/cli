@@ -111,6 +111,22 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 				Value(&cfg.TailscaleSSH),
 		).WithHideFunc(func() bool { return pmode != "tailnet" }),
 
+		// Telegram alerts — the detection half: know when the box is in trouble.
+		huh.NewGroup(
+			huh.NewConfirm().Title("Send Telegram alerts (daily audit, health, SSH logins)?").
+				Value(&cfg.EnableAlerts),
+		),
+		huh.NewGroup(
+			huh.NewNote().Title("Telegram").
+				Description("Create a bot with @BotFather, then get your chat ID from @userinfobot.\nThe bot token is a secret and is never written to your config file."),
+			huh.NewInput().Title("Bot token").
+				EchoMode(huh.EchoModePassword).Value(&cfg.TelegramBotToken).
+				Validate(nonEmpty("bot token")),
+			huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).
+				Validate(nonEmpty("chat ID")),
+			huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
+		).WithHideFunc(func() bool { return !cfg.EnableAlerts }),
+
 		// SSH hardening — the dangerous bits, asked explicitly.
 		huh.NewGroup(
 			huh.NewNote().Title("⚠  SSH hardening").

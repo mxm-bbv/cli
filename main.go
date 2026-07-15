@@ -12,18 +12,44 @@ import (
 
 	"github.com/mxm-bbv/cli/internal/audit"
 	"github.com/mxm-bbv/cli/internal/config"
+	"github.com/mxm-bbv/cli/internal/lint"
+	"github.com/mxm-bbv/cli/internal/status"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/system"
 	"github.com/mxm-bbv/cli/internal/ui"
+	"github.com/mxm-bbv/cli/internal/update"
 )
 
 const version = "0.1.0"
 
 func main() {
-	// Subcommands (before flag parsing): `forge audit` — read-only IOC and
-	// exposure scan of this host.
-	if len(os.Args) > 1 && os.Args[1] == "audit" {
-		os.Exit(audit.Run())
+	// Subcommands are dispatched before flag parsing so they can take their own
+	// arguments. The wizard is the default when no subcommand is given.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "audit":
+			quiet := len(os.Args) > 2 && (os.Args[2] == "--quiet" || os.Args[2] == "-q")
+			os.Exit(audit.Run(quiet))
+		case "status":
+			os.Exit(status.Run())
+		case "lint":
+			if len(os.Args) < 3 {
+				fmt.Println(ui.StyleErr.Render("  usage: forge lint <docker-compose.yml>"))
+				os.Exit(2)
+			}
+			os.Exit(lint.Run(os.Args[2]))
+		case "update":
+			if len(os.Args) > 2 && os.Args[2] == "images" {
+				os.Exit(update.Images())
+			}
+			allowUnsigned := false
+			for _, a := range os.Args[2:] {
+				if a == "--allow-unsigned" {
+					allowUnsigned = true
+				}
+			}
+			os.Exit(update.SelfUpdate(allowUnsigned))
+		}
 	}
 
 	var (
@@ -125,6 +151,13 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 				return cfg, err
 			}
 			cfg.TailscaleAuthKey = key
+		}
+		if cfg.EnableAlerts {
+			tok, err := ui.AskSecret("Telegram bot token")
+			if err != nil {
+				return cfg, err
+			}
+			cfg.TelegramBotToken = tok
 		}
 		return cfg, nil
 	}

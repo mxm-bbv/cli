@@ -28,9 +28,23 @@ type report struct {
 	// persistence) — a critical *exposure* is urgent but not evidence of a
 	// breach, and the closing advice must not confuse the two.
 	compromised bool
+	// quiet suppresses OK/info lines and colour, so the output is a clean plain
+	// list of findings suitable for a Telegram message (used by `--quiet`).
+	quiet bool
 }
 
 func (r *report) line(sev severity, msg string) {
+	if r.quiet {
+		switch sev {
+		case sevWarn:
+			r.warns++
+			fmt.Println("⚠ " + msg)
+		case sevCrit:
+			r.crits++
+			fmt.Println("✗ " + msg)
+		}
+		return
+	}
 	switch sev {
 	case sevOK:
 		fmt.Println("  " + ui.StyleOK.Render("✓") + "  " + msg)
@@ -46,21 +60,36 @@ func (r *report) line(sev severity, msg string) {
 }
 
 // Run executes all checks and returns the process exit code:
-// 0 clean, 1 warnings only, 2 critical findings.
-func Run() int {
-	fmt.Println(ui.StyleTitle.Render("  forge audit — host compromise & exposure check"))
-	fmt.Println()
-	if os.Geteuid() != 0 {
-		fmt.Println(ui.StyleWarn.Render("  Not running as root — some checks (docker, iptables, cron) may be incomplete.\n"))
+// 0 clean, 1 warnings only, 2 critical findings. quiet trims the output to just
+// the findings (no colour, no OK lines) for machine/Telegram consumption.
+func Run(quiet bool) int {
+	if !quiet {
+		fmt.Println(ui.StyleTitle.Render("  forge audit — host compromise & exposure check"))
+		fmt.Println()
+		if os.Geteuid() != 0 {
+			fmt.Println(ui.StyleWarn.Render("  Not running as root — some checks (docker, iptables, cron) may be incomplete.\n"))
+		}
 	}
 
-	r := &report{}
+	r := &report{quiet: quiet}
 	checkRootkit(r)
 	checkIOCPaths(r)
 	checkPersistence(r)
 	checkContainers(r)
 	checkFirewall(r)
 	checkAuthorizedKeys(r)
+
+	if quiet {
+		// Callers act on the exit code; findings were already printed.
+		switch {
+		case r.crits > 0:
+			return 2
+		case r.warns > 0:
+			return 1
+		default:
+			return 0
+		}
+	}
 
 	fmt.Println()
 	switch {
