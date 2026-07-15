@@ -20,7 +20,7 @@ import (
 	"github.com/mxm-bbv/cli/internal/update"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 func main() {
 	// Subcommands are dispatched before flag parsing so they can take their own
