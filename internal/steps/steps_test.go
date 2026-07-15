@@ -20,6 +20,10 @@ func TestDryRunAllSteps(t *testing.T) {
 	cfg.AdminKeyValue = "ssh-ed25519 AAAAC3NzaC1lZDI1 admin@laptop"
 	cfg.InstallWatchtower = true
 	cfg.DeployPassword = "s3cret"
+	cfg.TailscaleAuthKey = "tskey-auth-TESTONLY"
+	cfg.EnableAlerts = true
+	cfg.AlertsChatID = "123456"
+	cfg.TelegramBotToken = "bot-TESTONLY"
 
 	st, ctx := BuildSteps(cfg)
 	for _, s := range st {
@@ -33,20 +37,29 @@ func TestDryRunAllSteps(t *testing.T) {
 
 	log := strings.Join(system.CommandLog, "\n")
 	wantSubstrings := []string{
-		"apt-get -o DPkg::Lock::Timeout=300 update",
-		"sources.list.d/docker.list",
-		"useradd -m -s /bin/bash deploy",
-		"usermod -aG sudo deploy",
-		"usermod -aG docker deploy",
-		"ssh-keygen -t ed25519",
-		portainerAgentImage,
-		watchtowerImage,
-		"no-new-privileges",
-		"ufw allow 2222/tcp",
-		"jail.d/sshd.local",
-		"20auto-upgrades",
-		"sshd -t",
-		"systemctl restart ssh",
+		"apt-get -o DPkg::Lock::Timeout=300 update", // preflight (non-interactive)
+		"sources.list.d/docker.list",                // docker apt source (always written)
+		"useradd -m -s /bin/bash deploy",            // deploy user
+		"usermod -aG sudo deploy",                   // sudo group
+		"usermod -aG docker deploy",                 // docker group
+		"ssh-keygen -t ed25519",                     // github key
+		"tailscale up --auth-key=<hidden> --ssh",    // tailnet join (key redacted)
+		"<tailnet-ip>:9001:9001",                    // agent bound to the tailnet, not 0.0.0.0
+		"-e AGENT_SECRET",                           // agent pairing secret (value via env)
+		portainerAgentImage,                         // portainer (pinned version)
+		watchtowerImage,                             // watchtower (pinned version)
+		"--monitor-only",                            // watchtower never auto-replaces containers
+		"no-new-privileges",                         // containers hardened
+		"ufw allow 2222/tcp",                        // firewall honours ssh port
+		"ufw allow in on tailscale0",                // tailnet is a trusted admin interface
+		"jail.d/sshd.local",                         // fail2ban jail
+		"forge-docker-user.service",                 // DOCKER-USER rules (docker can't bypass UFW)
+		"forge-audit.timer",                         // scheduled audit -> Telegram
+		"forge-health.timer",                        // scheduled health checks
+		"alerts.env",                                // secret alert config written
+		"20auto-upgrades",                           // unattended-upgrades config
+		"sshd -t",                                   // sshd validated before restart
+		"systemctl restart ssh",                     // sshd restarted last
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
@@ -54,8 +67,58 @@ func TestDryRunAllSteps(t *testing.T) {
 		}
 	}
 
+	// Secrets must never appear in the command log.
 	if strings.Contains(log, "s3cret") {
 		t.Fatal("deploy password leaked into command log")
+	}
+	if strings.Contains(log, "tskey-auth-TESTONLY") {
+		t.Fatal("tailscale auth key leaked into command log")
+	}
+	if strings.Contains(log, "bot-TESTONLY") {
+		t.Fatal("telegram bot token leaked into command log")
+	}
+	if ctx.AgentSecret == "" {
+		t.Fatal("expected an AGENT_SECRET to be generated")
+	}
+	if strings.Contains(log, ctx.AgentSecret) {
+		t.Fatal("AGENT_SECRET leaked into command log")
+	}
+}
+
+// TestPortainerPublicMode covers the discouraged fallback: the agent stays on
+// 0.0.0.0 but must carry a secret, skip tailscale, and open 9001 in DOCKER-USER.
+func TestPortainerPublicMode(t *testing.T) {
+	system.DryRun = true
+	system.CommandLog = nil
+	t.Cleanup(func() { system.DryRun = false; system.CommandLog = nil })
+
+	cfg := config.Default()
+	cfg.PortainerAccess = config.PortainerPublic
+	cfg.AdminKeySource = config.AdminKeySkip
+	cfg.GenerateGitHubKey = false
+
+	st, ctx := BuildSteps(cfg)
+	for _, s := range st {
+		if s.Skip != nil && s.Skip(ctx) {
+			continue
+		}
+		if err := s.Run(ctx); err != nil {
+			t.Fatalf("step %q failed: %v", s.Name, err)
+		}
+	}
+
+	log := strings.Join(system.CommandLog, "\n")
+	if !strings.Contains(log, "-p 9001:9001") {
+		t.Errorf("expected public binding, log:\n%s", log)
+	}
+	if strings.Contains(log, "tailscale up") {
+		t.Error("tailscale must not run in public mode")
+	}
+	if !strings.Contains(log, "-e AGENT_SECRET") {
+		t.Error("public agent must still require AGENT_SECRET")
+	}
+	if strings.Contains(log, "<tailnet-ip>") {
+		t.Error("no tailnet binding expected in public mode")
 	}
 }
 
@@ -114,6 +177,7 @@ func TestSkipDisabledFeatures(t *testing.T) {
 	cfg.InstallPortainer = false
 	cfg.InstallWatchtower = false
 	cfg.EnableAutoUpdates = false
+	cfg.EnableAlerts = false
 
 	st, ctx := BuildSteps(cfg)
 	skipped := map[string]bool{}
@@ -124,9 +188,12 @@ func TestSkipDisabledFeatures(t *testing.T) {
 	}
 	for _, name := range []string{
 		"UFW firewall: allow SSH/HTTP/HTTPS, enable",
-		"Portainer Agent (port 9001)",
-		"Watchtower (auto-update containers)",
+		"Container firewall: DOCKER-USER rules (docker can't bypass UFW)",
+		"Tailscale: private network for admin access",
+		"Portainer Agent",
+		"Watchtower (monitor-only update checks)",
 		"Unattended security upgrades",
+		"Telegram alerts: daily audit, health & SSH-login pushes",
 	} {
 		if !skipped[name] {
 			t.Errorf("expected step %q to be skipped when its feature is disabled", name)

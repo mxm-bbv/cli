@@ -18,7 +18,24 @@ const (
 
 	githubHostKeyFP = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
 
-	portainerAgentImage = "portainer/agent:2.21.5"
+	// tailscaleGPGFingerprint is Tailscale's apt signing key fingerprint,
+	// computed from https://pkgs.tailscale.com/stable/<os>/<codename>.asc
+	// (identical for Ubuntu and Debian). Same fail-closed rule as Docker's key.
+	tailscaleGPGFingerprint = "2596A99EAAB33821893C0A79458CA832957F5868"
+
+	// ReleasePubKey is forge's own minisign public key. `forge update` verifies
+	// that a downloaded release's checksums.txt carries a valid signature from
+	// the matching private key before trusting (and installing) any binary.
+	// The private key never leaves the maintainer's machine.
+	ReleasePubKey = "RWSk3LOux6EkxZOpVER2fnvn2WKOHPBPG128iEhEy3JGztPOte98a+3C"
+
+	// Container images are pinned to specific, immutable version tags — never
+	// ":latest" — so a repushed tag can't swap the image out from under us.
+	// To pin even harder, append an @sha256:<digest> after verifying it.
+	//
+	// The agent version must stay in lockstep with your Portainer Server
+	// (same major.minor, server not older) — bump both together.
+	portainerAgentImage = "portainer/agent:2.39.1"
 	watchtowerImage     = "containrrr/watchtower:1.7.1"
 )
 
@@ -36,25 +53,30 @@ func ValidUsername(name string) error {
 // githubUserRe follows GitHub's username rules (alphanumeric plus hyphens).
 var githubUserRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 
-// verifyDockerKey checks the downloaded Docker apt key against the pinned
-// fingerprint, deleting it and erroring out on mismatch.
-func verifyDockerKey(path string) error {
+// verifyKeyFingerprint checks that a downloaded keyring (armored or binary)
+// matches the pinned fingerprint, deleting it and erroring out on any mismatch.
+func verifyKeyFingerprint(path, fingerprint, label string) error {
 	if system.DryRun {
 		return nil
 	}
 	out, err := system.Run("gpg", "--show-keys", "--with-colons", path)
 	if err != nil {
-		return fmt.Errorf("verify docker key: %w", err)
+		return fmt.Errorf("verify %s key: %w", label, err)
 	}
-	if !strings.Contains(strings.ToUpper(out), dockerGPGFingerprint) {
+	if !strings.Contains(strings.ToUpper(out), fingerprint) {
 		_ = os.Remove(path)
-		return fmt.Errorf("Docker GPG key fingerprint mismatch — refusing to trust %s (expected %s)", path, dockerGPGFingerprint)
+		return fmt.Errorf("%s GPG key fingerprint mismatch — refusing to trust %s (expected %s)", label, path, fingerprint)
 	}
 	return nil
 }
 
-// verifiedGitHubHostKey runs ssh-keyscan and verifies the ed25519 host key
-// against the pinned fingerprint before returning the known_hosts line.
+func verifyDockerKey(path string) error {
+	return verifyKeyFingerprint(path, dockerGPGFingerprint, "Docker")
+}
+
+// verifiedGitHubHostKey runs ssh-keyscan, verifies the ed25519 host key against
+// the pinned fingerprint, and returns the known_hosts line to store. It errors
+// out rather than trusting an unexpected key.
 func verifiedGitHubHostKey() (string, error) {
 	if system.DryRun {
 		return "github.com ssh-ed25519 <pinned on real run>", nil

@@ -16,6 +16,10 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	port := strconv.Itoa(cfg.SSHPort)
 	pw, pw2 := "", ""
 	src := string(cfg.AdminKeySource)
+	pmode := string(cfg.PortainerAccess)
+	if !cfg.InstallPortainer {
+		pmode = "off"
+	}
 
 	groups := []*huh.Group{
 		huh.NewGroup(
@@ -76,13 +80,46 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		),
 
 		huh.NewGroup(
-			huh.NewConfirm().Title("Docker log rotation (daemon.json)?").Value(&cfg.EnableLogRotation),
-			huh.NewConfirm().Title("Install Portainer Agent (:9001)?").Value(&cfg.InstallPortainer),
-			huh.NewConfirm().Title("Install Watchtower (auto-update containers)?").Value(&cfg.InstallWatchtower),
-			huh.NewConfirm().Title("Enable UFW firewall + fail2ban?").Value(&cfg.EnableFirewall),
+			huh.NewConfirm().Title("Docker daemon hardening + log rotation (daemon.json)?").Value(&cfg.EnableLogRotation),
+			huh.NewSelect[string]().Title("Portainer Agent access").
+				Description("An agent is root-equivalent. Published on 0.0.0.0:9001 it WILL be found and abused.").
+				Options(
+					huh.NewOption("Tailscale only — invisible to the internet (recommended)", "tailnet"),
+					huh.NewOption("Public :9001 with AGENT_SECRET (NOT recommended)", "public"),
+					huh.NewOption("Don't install Portainer Agent", "off"),
+				).Value(&pmode),
+			huh.NewConfirm().Title("Install Watchtower (monitor-only update checks)?").Value(&cfg.InstallWatchtower),
+			huh.NewConfirm().Title("Enable firewall (UFW + fail2ban + DOCKER-USER container rules)?").Value(&cfg.EnableFirewall),
 			huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
 		),
 
+		// Tailscale details — only when the agent rides the tailnet.
+		huh.NewGroup(
+			huh.NewNote().Title("Tailscale").
+				Description("Create an auth key at https://login.tailscale.com/admin/settings/keys\nand install the Tailscale app on your laptop/phone to reach the agent."),
+			huh.NewInput().Title("Tailscale auth key (empty if this box already joined)").
+				EchoMode(huh.EchoModePassword).Value(&cfg.TailscaleAuthKey),
+			huh.NewConfirm().Title("Enable Tailscale SSH (emergency access from your phone)?").
+				Value(&cfg.TailscaleSSH),
+		).WithHideFunc(func() bool { return pmode != "tailnet" }),
+
+		// Telegram alerts — the detection half: know when the box is in trouble.
+		huh.NewGroup(
+			huh.NewConfirm().Title("Send Telegram alerts (daily audit, health, SSH logins)?").
+				Value(&cfg.EnableAlerts),
+		),
+		huh.NewGroup(
+			huh.NewNote().Title("Telegram").
+				Description("Create a bot with @BotFather, then get your chat ID from @userinfobot.\nThe bot token is a secret and is never written to your config file."),
+			huh.NewInput().Title("Bot token").
+				EchoMode(huh.EchoModePassword).Value(&cfg.TelegramBotToken).
+				Validate(nonEmpty("bot token")),
+			huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).
+				Validate(nonEmpty("chat ID")),
+			huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
+		).WithHideFunc(func() bool { return !cfg.EnableAlerts }),
+
+		// SSH hardening — the dangerous bits, asked explicitly.
 		huh.NewGroup(
 			huh.NewNote().Title("⚠  SSH hardening").
 				Description("These run LAST. forge refuses to disable password auth unless a key is installed, and validates sshd -t before restart — so you can't lock yourself out."),
@@ -101,10 +138,28 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	cfg.SwapGB = atoiOr(swap, cfg.SwapGB)
 	cfg.SSHPort = atoiOr(port, cfg.SSHPort)
 	cfg.DeployPassword = pw
+	cfg.InstallPortainer = pmode != "off"
+	if cfg.InstallPortainer {
+		cfg.PortainerAccess = config.PortainerAccess(pmode)
+	}
 	return cfg, nil
 }
 
-// AskPassword prompts only for the deploy user's password (used in --config replay).
+// AskSecret prompts for a single hidden value (used in --config replay for
+// secrets that are never serialised, like the Tailscale auth key).
+func AskSecret(title string) (string, error) {
+	v := ""
+	form := huh.NewForm(huh.NewGroup(
+		huh.NewInput().Title(title).EchoMode(huh.EchoModePassword).Value(&v),
+	)).WithTheme(forgeTheme())
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
+// AskPassword prompts only for the deploy user's password (used in --config
+// replay, where the rest of the answers come from a file).
 func AskPassword(username string) (string, error) {
 	pw, pw2 := "", ""
 	form := huh.NewForm(huh.NewGroup(

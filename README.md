@@ -18,15 +18,30 @@ production-ready host in one pass — no runtime, no dependencies on the server.
 | Area        | Actions |
 |-------------|---------|
 | **Docker**  | Docker Engine + Compose V2 + Buildx from the official apt repo |
-| **Logging** | `daemon.json` with json-file log rotation (10m × 3) so logs never fill the disk |
-| **Portainer** | Portainer Agent on `:9001` (optional) |
-| **Watchtower** | Auto-update running containers (optional) |
+| **Daemon**  | `daemon.json`: json-file log rotation (10m × 3), `no-new-privileges` for every container, `live-restore` |
+| **Tailscale** | Joins your tailnet (fingerprint-verified apt repo) so admin surfaces never face the internet; optional Tailscale SSH for emergency phone access |
+| **Portainer** | Portainer Agent bound to the **tailnet IP only** + `AGENT_SECRET` (public `0.0.0.0:9001` is a known root-compromise vector; a discouraged public+secret mode exists) |
+| **Watchtower** | **Monitor-only** update checks — never auto-replaces containers (optional) |
 | **User**    | Creates `deploy` with a password you set, in the `sudo` and `docker` groups |
 | **SSH keys**| Imports *your* public key into `authorized_keys`; generates an ed25519 **deploy key for GitHub** (+ `known_hosts` + `~/.ssh/config`) |
 | **Hardening** | `sshd`: disable root login, key-only auth, optional port change, `AllowUsers` — validated with `sshd -t` before restart |
-| **Firewall** | UFW (allow SSH/80/443) + fail2ban SSH jail |
+| **Firewall** | UFW (allow SSH/80/443) + fail2ban SSH jail + **DOCKER-USER rules** so published container ports can't bypass UFW |
 | **Updates** | unattended-upgrades for automatic security patches |
+| **Alerts**  | Telegram push (optional): daily `forge audit`, host-health warnings (load/disk/reboot), SSH-login notices |
 | **Base**    | hostname, timezone, NTP, swap file, operator utilities (htop, ncdu, jq, tmux…) |
+| **Audit**   | `sudo forge audit` — read-only scan for rootkit/proxyjacking IOCs and risky Docker exposure |
+
+## Day-2 commands
+
+Beyond the provisioning wizard, `forge` doubles as an operations tool:
+
+| Command | What it does |
+|---------|--------------|
+| `sudo forge audit` | Read-only compromise & exposure scan (IOCs, public ports, floating tags, `/` mounts, docker.sock, UFW bypass). Exit 2 = critical. `--quiet` prints only findings |
+| `forge status` | One-glance summary: Docker, agent exposure, firewall, tailnet, alert timers, swap |
+| `forge lint <compose.yml>` | Static-check a Compose file **before** deploy for the same risky settings |
+| `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
+| `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |
 
 Every step is **idempotent** — re-running skips what's already done. SSH
 hardening always runs **last**, so the box stays reachable until everything
@@ -71,6 +86,7 @@ key to paste into your repo's Deploy keys**.
 
 | Flag | Description |
 |------|-------------|
+| `audit` | **Subcommand**: read-only compromise & exposure check (rootkit IOCs, cron/systemd persistence, public container ports, floating tags, docker.sock holders, firewall bypass). Exit code 2 = critical findings |
 | `--dry-run` | Walk the wizard and print every action without changing anything (works without root) |
 | `--config <file>` | Replay answers from a YAML file (only the password is prompted) |
 | `--save-config <file>` | Save your answers to YAML for reuse (the password is **never** written) |
@@ -96,12 +112,20 @@ before restarting, but it can't test *your* key for you.
 Supply-chain hardening is a first-class concern — see [`SECURITY.md`](SECURITY.md)
 for the full picture. In short:
 
-- Docker's apt key is **fingerprint-verified** (fail-closed) before it can sign packages.
+- Docker's and Tailscale's apt keys are **fingerprint-verified** (fail-closed) before they can sign packages.
 - Container images are **pinned to versions** (never `:latest`) and run with `no-new-privileges`.
+- The Portainer Agent is **never published to the internet by default**: it binds to the
+  tailnet IP and requires an `AGENT_SECRET` to pair. An exposed agent is root-equivalent.
+- **DOCKER-USER firewall rules** close the classic hole where `-p`-published ports
+  silently bypass UFW: containers accept external traffic on 80/443 only.
 - GitHub's SSH host key is **pinned**, not trust-on-first-use.
 - Installers **verify SHA256** and fail closed on mismatch.
 - Usernames are regex-validated and all downloads run **without a shell** (no injection).
 - Preview everything first: `forge --dry-run` prints every command and changes nothing.
+- Check a running box any time: `sudo forge audit` scans for rootkit/proxyjacking
+  IOCs and risky Docker exposure without changing anything.
+- Releases are **minisign-signed**; `forge update` verifies the signature in-process
+  (not just a checksum from the same host that could be swapped alongside it).
 
 ## Layout
 

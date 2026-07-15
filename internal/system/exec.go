@@ -58,6 +58,20 @@ func Run(name string, args ...string) (string, error) {
 	return execute(name+" "+strings.Join(args, " "), name, args, "")
 }
 
+// RunRedacted executes name/args like Run but records logline in CommandLog
+// instead of the real command line, so secrets passed as arguments never reach
+// the log (dry-run output, tests, summaries).
+func RunRedacted(logline, name string, args ...string) (string, error) {
+	return execute(logline, name, args, "")
+}
+
+// RunEnv executes like Run but with extra KEY=VALUE entries appended to the
+// environment. The values never appear in CommandLog, so it is safe for
+// secrets consumed via env (e.g. `docker run -e KEY` without a value).
+func RunEnv(env []string, name string, args ...string) (string, error) {
+	return executeEnv(name+" "+strings.Join(args, " "), name, args, "", env)
+}
+
 // RunShell runs a command through `bash -c`, for pipelines and redirects.
 func RunShell(script string) (string, error) {
 	return execute(script, "bash", []string{"-c", script}, "")
@@ -71,6 +85,11 @@ func RunInput(stdin, name string, args ...string) error {
 }
 
 func execute(logline, name string, args []string, stdin string) (string, error) {
+	return executeEnv(logline, name, args, stdin, nil)
+}
+
+// executeEnv is execute with optional extra environment entries (never logged).
+func executeEnv(logline, name string, args []string, stdin string, extraEnv []string) (string, error) {
 	CommandLog = append(CommandLog, strings.TrimSpace(logline))
 	if DryRun {
 		return "", nil
@@ -80,6 +99,9 @@ func execute(logline, name string, args []string, stdin string) (string, error) 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

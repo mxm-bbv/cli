@@ -72,21 +72,27 @@ func dockerStep() Step {
 	}
 }
 
+// daemonJSON: log rotation plus daemon-wide hardening.
+//   - no-new-privileges: every container is denied setuid escalation by
+//     default (not just the ones forge starts);
+//   - live-restore: containers survive dockerd restarts/upgrades.
 const daemonJSON = `{
   "log-driver": "json-file",
   "log-opts": {
     "max-size": "10m",
     "max-file": "3"
-  }
+  },
+  "no-new-privileges": true,
+  "live-restore": true
 }
 `
 
 func logRotationStep() Step {
 	return Step{
-		Name: "Docker log rotation (daemon.json)",
+		Name: "Docker daemon hardening + log rotation (daemon.json)",
 		Skip: func(c *Context) bool {
 			return !c.Cfg.EnableLogRotation ||
-				system.FileContains("/etc/docker/daemon.json", "max-size")
+				system.FileContains("/etc/docker/daemon.json", "no-new-privileges")
 		},
 		Run: func(c *Context) error {
 			if _, err := system.Run("install", "-m", "0755", "-d", "/etc/docker"); err != nil {
