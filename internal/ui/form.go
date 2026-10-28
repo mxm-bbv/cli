@@ -2,7 +2,9 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 
@@ -73,10 +75,11 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		huh.NewGroup(
 			huh.NewConfirm().Title("Apply base tuning (hostname, timezone, swap, utils)?").
 				Value(&cfg.EnableBaseTuning),
-			huh.NewInput().Title("Hostname (blank = leave as-is)").Value(&cfg.Hostname),
+			huh.NewInput().Title("Hostname (blank = leave as-is)").Value(&cfg.Hostname).
+				Validate(config.ValidHostname),
 			huh.NewInput().Title("Timezone").Value(&cfg.Timezone),
 			huh.NewInput().Title("Swap size in GB (0 = none)").Value(&swap).
-				Validate(isInt),
+				Validate(intRange(0, 128)),
 		),
 
 		huh.NewGroup(
@@ -113,9 +116,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 				Description("Create a bot with @BotFather, then get your chat ID from @userinfobot.\nThe bot token is a secret and is never written to your config file."),
 			huh.NewInput().Title("Bot token").
 				EchoMode(huh.EchoModePassword).Value(&cfg.TelegramBotToken).
-				Validate(nonEmpty("bot token")),
+				Validate(config.ValidTelegramToken),
 			huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).
-				Validate(nonEmpty("chat ID")),
+				Validate(config.ValidTelegramChatID),
 			huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
 		).WithHideFunc(func() bool { return !cfg.EnableAlerts }),
 
@@ -123,7 +126,7 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		huh.NewGroup(
 			huh.NewNote().Title("⚠  SSH hardening").
 				Description("These run LAST. forge refuses to disable password auth unless a key is installed, and validates sshd -t before restart — so you can't lock yourself out."),
-			huh.NewInput().Title("SSH port").Value(&port).Validate(isInt),
+			huh.NewInput().Title("SSH port").Value(&port).Validate(intRange(1, 65535)),
 			huh.NewConfirm().Title("Disable root login over SSH?").Value(&cfg.DisableRootLogin),
 			huh.NewConfirm().Title("Disable password authentication (key-only)?").Value(&cfg.DisablePassauth),
 		),
@@ -201,15 +204,21 @@ func nonEmpty(field string) func(string) error {
 	}
 }
 
-func isInt(s string) error {
-	if _, err := strconv.Atoi(s); err != nil {
-		return errors.New("must be a number")
+func intRange(lo, hi int) func(string) error {
+	return func(s string) error {
+		v, err := strconv.Atoi(strings.TrimSpace(s))
+		if err != nil {
+			return errors.New("must be a number")
+		}
+		if v < lo || v > hi {
+			return fmt.Errorf("must be between %d and %d", lo, hi)
+		}
+		return nil
 	}
-	return nil
 }
 
 func atoiOr(s string, def int) int {
-	if v, err := strconv.Atoi(s); err == nil {
+	if v, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 		return v
 	}
 	return def

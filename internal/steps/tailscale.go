@@ -24,7 +24,11 @@ func tailscaleStep() Step {
 		},
 		Run: func(c *Context) error {
 			if !system.CommandExists("tailscale") {
-				if err := installTailscale(); err != nil {
+				p, err := c.platform()
+				if err != nil {
+					return err
+				}
+				if err := installTailscale(p); err != nil {
 					return err
 				}
 			}
@@ -64,23 +68,24 @@ func tailscaleStep() Step {
 
 // installTailscale adds Tailscale's apt repo (fingerprint-verified, fail-closed)
 // and installs the package — mirroring the Docker install's trust model.
-func installTailscale() error {
-	os := system.ReadOSRelease()
+// Derivatives (Mint, Pop!_OS, …) use the Ubuntu/Debian release they are built
+// on — Tailscale publishes repos only for the upstream codenames.
+func installTailscale(p system.Platform) error {
 	if !system.FileExists(tailscaleKeyring) {
-		url := fmt.Sprintf("https://pkgs.tailscale.com/stable/%s/%s.noarmor.gpg", os.ID, os.Codename)
+		url := fmt.Sprintf("https://pkgs.tailscale.com/stable/%s/%s.noarmor.gpg", p.Family, p.Codename)
 		if _, err := system.Run("curl", "-fsSL", url, "-o", tailscaleKeyring); err != nil {
-			return err
+			return fmt.Errorf("Tailscale has no apt repo for %s (%s): %w", p, url, err)
 		}
 		if err := verifyKeyFingerprint(tailscaleKeyring, tailscaleGPGFingerprint, "Tailscale"); err != nil {
 			return err
 		}
 	}
 	repoLine := fmt.Sprintf("deb [signed-by=%s] https://pkgs.tailscale.com/stable/%s %s main",
-		tailscaleKeyring, os.ID, os.Codename)
+		tailscaleKeyring, p.Family, p.Codename)
 	if err := system.WriteFile(tailscaleList, repoLine+"\n", 0o644); err != nil {
 		return err
 	}
-	if _, err := system.Run("apt-get", "update", "-y"); err != nil {
+	if _, err := aptGet("update", "-y"); err != nil {
 		return err
 	}
 	return aptInstall("tailscale")

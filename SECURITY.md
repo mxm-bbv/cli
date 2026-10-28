@@ -18,7 +18,7 @@ deliberate, reviewable act.
 | GitHub host key (ed25519) | `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` | docs.github.com |
 | forge release minisign key | `RWSk3LOux6EkxZOpVER2fnvn2WKOHPBPG128iEhEy3JGztPOte98a+3C` | this repo (`pins.go`) |
 | Portainer Agent image | `portainer/agent:2.39.1` (keep in lockstep with your Portainer Server) | Docker Hub |
-| Watchtower image | `containrrr/watchtower:1.7.1` | Docker Hub |
+| Watchtower image | `nickfedor/watchtower:1.23.2` (maintained fork — upstream `containrrr` was archived Dec 2025 and fails on Docker 29+) | Docker Hub |
 
 ## What is verified, and how
 
@@ -51,7 +51,19 @@ deliberate, reviewable act.
   *container* port (DNAT runs first) — publish services on matching ports.
 - **Watchtower** — runs `--monitor-only`. An auto-updater holding the docker
   socket is a supply-chain risk: it would replace your containers with whatever
-  a registry serves next. It reports; you update deliberately.
+  a registry serves next. It reports; you update deliberately. forge uses the
+  maintained `nickfedor/watchtower` fork: the archived `containrrr/watchtower`
+  speaks Docker API 1.25, which Engine 29+ rejects, so it crash-loops.
+- **sshd policy** — written to `/etc/ssh/sshd_config.d/00-forge.conf`, not the
+  main file. sshd keeps the *first* value it reads and the stock config
+  includes `sshd_config.d/*.conf` at the top, so on cloud images
+  `50-cloud-init.conf` (`PasswordAuthentication yes`) would otherwise silently
+  win. After `sshd -t`, forge reads back the effective config with `sshd -T`
+  and reverts if anything (password auth, root login, port, `AllowUsers`)
+  differs. A port change keeps the old port open in UFW until sshd answers on
+  the new one (a real TCP connection returning an `SSH-` banner); Ubuntu's
+  socket-activated `ssh.socket` is rebound too. Any failure restores the
+  previous config and restarts sshd onto it.
 - **GitHub host key** — added to `known_hosts` only after `ssh-keyscan` output
   is fingerprinted and matched against the pinned value
   (`verifiedGitHubHostKey`) — no trust-on-first-use.
@@ -70,8 +82,14 @@ deliberate, reviewable act.
 - **Telegram alerts** — push-only over HTTPS to `api.telegram.org`; nothing
   listens. The bot token lives in `/etc/forge/alerts.env` (mode 0600) and is
   never serialised to the reusable YAML config or written to the command log.
-  The SSH-login notice is wired through `/etc/ssh/sshrc` (backgrounded,
-  best-effort) rather than PAM, so a failure there can never block a login.
+  The token reaches curl through a config on stdin, never argv, so other local
+  users can't read it from `/proc`. Token and chat ID are format-checked before
+  they are written, because `alerts.env` is sourced by root-run scripts. The
+  SSH-login notice runs from `/etc/pam.d/sshd` as
+  `session optional pam_exec.so` — as root, so it can read the 0600 env file
+  (the former `/etc/ssh/sshrc` hook ran as the logging-in user and never fired
+  for non-root logins). `optional` plus a script that backgrounds the push and
+  exits immediately means it can never block or delay a login.
 - **No command injection** — the deploy username is validated against a strict
   regex (`ValidUsername`) before it flows into any command, the GitHub username
   for key fetching is regex-validated, and both use `exec` (no shell). Secrets

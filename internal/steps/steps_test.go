@@ -9,9 +9,7 @@ import (
 )
 
 func TestDryRunAllSteps(t *testing.T) {
-	system.DryRun = true
-	system.CommandLog = nil
-	t.Cleanup(func() { system.DryRun = false; system.CommandLog = nil })
+	dryRunAs(t, ubuntuNoble, false)
 
 	cfg := config.Default()
 	cfg.Hostname = "web-01"
@@ -23,7 +21,7 @@ func TestDryRunAllSteps(t *testing.T) {
 	cfg.TailscaleAuthKey = "tskey-auth-TESTONLY"
 	cfg.EnableAlerts = true
 	cfg.AlertsChatID = "123456"
-	cfg.TelegramBotToken = "bot-TESTONLY"
+	cfg.TelegramBotToken = "123456789:TESTONLY_secret_token_value_abcdefgh"
 
 	st, ctx := BuildSteps(cfg)
 	for _, s := range st {
@@ -37,29 +35,39 @@ func TestDryRunAllSteps(t *testing.T) {
 
 	log := strings.Join(system.CommandLog, "\n")
 	wantSubstrings := []string{
-		"apt-get -o DPkg::Lock::Timeout=300 update", // preflight (non-interactive)
-		"sources.list.d/docker.list",                // docker apt source (always written)
-		"useradd -m -s /bin/bash deploy",            // deploy user
-		"usermod -aG sudo deploy",                   // sudo group
-		"usermod -aG docker deploy",                 // docker group
-		"ssh-keygen -t ed25519",                     // github key
-		"tailscale up --auth-key=<hidden> --ssh",    // tailnet join (key redacted)
-		"<tailnet-ip>:9001:9001",                    // agent bound to the tailnet, not 0.0.0.0
-		"-e AGENT_SECRET",                           // agent pairing secret (value via env)
-		portainerAgentImage,                         // portainer (pinned version)
-		watchtowerImage,                             // watchtower (pinned version)
-		"--monitor-only",                            // watchtower never auto-replaces containers
-		"no-new-privileges",                         // containers hardened
-		"ufw allow 2222/tcp",                        // firewall honours ssh port
-		"ufw allow in on tailscale0",                // tailnet is a trusted admin interface
-		"jail.d/sshd.local",                         // fail2ban jail
-		"forge-docker-user.service",                 // DOCKER-USER rules (docker can't bypass UFW)
-		"forge-audit.timer",                         // scheduled audit -> Telegram
-		"forge-health.timer",                        // scheduled health checks
-		"alerts.env",                                // secret alert config written
-		"20auto-upgrades",                           // unattended-upgrades config
-		"sshd -t",                                   // sshd validated before restart
-		"systemctl restart ssh",                     // sshd restarted last
+		"apt-get -o DPkg::Lock::Timeout=300 update",               // preflight (non-interactive)
+		"linux/ubuntu/dists/noble/Release",                        // docker repo availability checked first
+		"sources.list.d/docker.list",                              // docker apt source (always written)
+		"ca-certificates curl gnupg sudo openssh-client iproute2", // sudo: minimal Debian lacks it
+		"fail2ban python3-systemd",                                // journald backend needs python3-systemd
+		"useradd -m -s /bin/bash deploy",                          // deploy user
+		"usermod -aG sudo deploy",                                 // sudo group
+		"usermod -aG docker deploy",                               // docker group
+		"ssh-keygen -t ed25519",                                   // github key
+		"tailscale up --auth-key=<hidden> --ssh",                  // tailnet join (key redacted)
+		"<tailnet-ip>:9001:9001",                                  // agent bound to the tailnet, not 0.0.0.0
+		"-e AGENT_SECRET",                                         // agent pairing secret (value via env)
+		portainerAgentImage,                                       // portainer (pinned version)
+		watchtowerImage,                                           // watchtower (pinned version)
+		"--monitor-only",                                          // watchtower never auto-replaces containers
+		"no-new-privileges",                                       // containers hardened
+		"ufw allow 2222/tcp",                                      // firewall honours ssh port
+		"ufw allow in on tailscale0",                              // tailnet is a trusted admin interface
+		"ufw allow 22/tcp",                                        // current SSH port stays open until sshd moves
+		"jail.d/sshd.local",                                       // fail2ban jail
+		"fail2ban-client -t",                                      // jail validated before restart
+		"forge-docker-user.service",                               // DOCKER-USER rules (docker can't bypass UFW)
+		"forge-audit.timer",                                       // scheduled audit -> Telegram
+		"forge-health.timer",                                      // scheduled health checks
+		"alerts.env",                                              // secret alert config written
+		"20auto-upgrades",                                         // unattended-upgrades config
+		"sshd -t",                                                 // sshd validated before restart
+		"sshd -T (verify effective settings)",                     // effective config checked (drop-in overrides)
+		"systemctl restart ssh",                                   // sshd restarted last
+		"connect 127.0.0.1:2222, expect SSH banner",               // new port verified before closing the old one
+		"ufw delete allow 22/tcp",                                 // transitional SSH rule removed
+		"pam.d/sshd",                                              // SSH-login alerts via pam_exec
+		"ssh-login-notify.sh",                                     // login hook script
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
@@ -74,7 +82,7 @@ func TestDryRunAllSteps(t *testing.T) {
 	if strings.Contains(log, "tskey-auth-TESTONLY") {
 		t.Fatal("tailscale auth key leaked into command log")
 	}
-	if strings.Contains(log, "bot-TESTONLY") {
+	if strings.Contains(log, "TESTONLY_secret_token") {
 		t.Fatal("telegram bot token leaked into command log")
 	}
 	if ctx.AgentSecret == "" {
@@ -88,9 +96,7 @@ func TestDryRunAllSteps(t *testing.T) {
 // TestPortainerPublicMode covers the discouraged fallback: the agent stays on
 // 0.0.0.0 but must carry a secret, skip tailscale, and open 9001 in DOCKER-USER.
 func TestPortainerPublicMode(t *testing.T) {
-	system.DryRun = true
-	system.CommandLog = nil
-	t.Cleanup(func() { system.DryRun = false; system.CommandLog = nil })
+	dryRunAs(t, ubuntuNoble, false)
 
 	cfg := config.Default()
 	cfg.PortainerAccess = config.PortainerPublic
@@ -154,8 +160,9 @@ func TestGitHubUsernameValidation(t *testing.T) {
 }
 
 func TestLockoutGuard(t *testing.T) {
+	prev := system.DryRun
 	system.DryRun = false
-	t.Cleanup(func() { system.DryRun = true })
+	t.Cleanup(func() { system.DryRun = prev })
 
 	cfg := config.Default()
 	cfg.Username = "nonexistent_user_xyz"
@@ -169,8 +176,7 @@ func TestLockoutGuard(t *testing.T) {
 }
 
 func TestSkipDisabledFeatures(t *testing.T) {
-	system.DryRun = true
-	t.Cleanup(func() { system.DryRun = false })
+	dryRunAs(t, ubuntuNoble, false)
 
 	cfg := config.Default()
 	cfg.EnableFirewall = false

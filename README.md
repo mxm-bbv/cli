@@ -13,6 +13,23 @@
 A single-binary TUI wizard that turns a **clean Ubuntu/Debian** box into a
 production-ready host in one pass — no runtime, no dependencies on the server.
 
+## Supported systems
+
+| Release | Status |
+|---------|--------|
+| **Ubuntu 22.04 / 24.04 / 26.04 LTS** | Supported — provisioned for real in CI containers |
+| **Debian 12 (bookworm) / 13 (trixie)** | Supported — provisioned for real in CI containers |
+| Ubuntu derivatives (Linux Mint, Pop!_OS, Zorin, elementary…) | Work — mapped to their Ubuntu base via `UBUNTU_CODENAME` |
+| Debian derivatives (LMDE, Raspberry Pi OS 64-bit, Proxmox VE…) | Work — mapped via `DEBIAN_CODENAME` / Debian codename |
+| Ubuntu interim releases, Debian testing | Run with a warning; Docker/Tailscale repo availability is checked live |
+| Ubuntu 20.04, Debian 11 | Legacy — run with a warning |
+| Anything non-apt, or without systemd | Refused up front |
+
+Architectures: `amd64`, `arm64`. Distro-specific details forge handles for you:
+`sudo` on minimal Debian, fail2ban's journald backend (Debian 12+ has no
+`auth.log`), Ubuntu's socket-activated `ssh.socket`, cloud-init's sshd and
+hostname overrides, snap-packaged Docker, and LXC/OpenVZ containers (no swap).
+
 ## What it does
 
 | Area        | Actions |
@@ -21,14 +38,14 @@ production-ready host in one pass — no runtime, no dependencies on the server.
 | **Daemon**  | `daemon.json`: json-file log rotation (10m × 3), `no-new-privileges` for every container, `live-restore` |
 | **Tailscale** | Joins your tailnet (fingerprint-verified apt repo) so admin surfaces never face the internet; optional Tailscale SSH for emergency phone access |
 | **Portainer** | Portainer Agent bound to the **tailnet IP only** + `AGENT_SECRET` (public `0.0.0.0:9001` is a known root-compromise vector; a discouraged public+secret mode exists) |
-| **Watchtower** | **Monitor-only** update checks — never auto-replaces containers (optional) |
+| **Watchtower** | **Monitor-only** update checks — never auto-replaces containers (optional; maintained `nickfedor/watchtower` fork) |
 | **User**    | Creates `deploy` with a password you set, in the `sudo` and `docker` groups |
 | **SSH keys**| Imports *your* public key into `authorized_keys`; generates an ed25519 **deploy key for GitHub** (+ `known_hosts` + `~/.ssh/config`) |
-| **Hardening** | `sshd`: disable root login, key-only auth, optional port change, `AllowUsers` — validated with `sshd -t` before restart |
-| **Firewall** | UFW (allow SSH/80/443) + fail2ban SSH jail + **DOCKER-USER rules** so published container ports can't bypass UFW |
+| **Hardening** | `sshd`: disable root login, key-only auth, optional port change, `AllowUsers` — in `sshd_config.d/00-forge.conf`, validated with `sshd -t`, read back with `sshd -T`, rolled back on any failure |
+| **Firewall** | UFW (allow SSH/80/443; the old SSH port stays open until sshd answers on the new one) + fail2ban SSH jail (journald) + **DOCKER-USER rules** (IPv4 + IPv6) so published container ports can't bypass UFW |
 | **Updates** | unattended-upgrades for automatic security patches |
 | **Alerts**  | Telegram push (optional): daily `forge audit`, host-health warnings (load/disk/reboot), SSH-login notices |
-| **Base**    | hostname, timezone, NTP, swap file, operator utilities (htop, ncdu, jq, tmux…) |
+| **Base**    | hostname (+ `/etc/hosts`, kept across cloud-init reboots), timezone, NTP, swap file, operator utilities (htop, ncdu, jq, tmux…) |
 | **Audit**   | `sudo forge audit` — read-only scan for rootkit/proxyjacking IOCs and risky Docker exposure |
 
 ## Day-2 commands
@@ -138,5 +155,6 @@ internal/ui             banner, huh wizard, bubbletea runner, summary
 deploy/                 self-hosted Caddy installer (cli.sh + site block)
 ```
 ```bash
-go test ./...           # exercises the full step engine in dry-run mode
+make test               # full step engine in dry-run mode, simulated per distro
+make test-distros       # real apt/sshd/fail2ban steps in Ubuntu/Debian containers (docker)
 ```

@@ -2,7 +2,11 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -109,7 +113,8 @@ func Default() Config {
 	}
 }
 
-// Load reads a Config from a YAML file.
+// Load reads a Config from a YAML file and validates it, so a bad value fails
+// before anything runs instead of halfway through provisioning.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	data, err := os.ReadFile(path)
@@ -119,7 +124,112 @@ func Load(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return cfg, err
 	}
-	return cfg, nil
+	return cfg, cfg.Validate()
+}
+
+// usernameRe restricts the deploy username to a POSIX- and shell-safe set.
+var usernameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// ValidUsername reports whether name is a safe Linux username.
+func ValidUsername(name string) error {
+	if !usernameRe.MatchString(name) {
+		return errors.New("must be lowercase, start with a letter/underscore, and contain only a-z 0-9 _ - (max 32)")
+	}
+	return nil
+}
+
+// hostLabelRe is one RFC 1123 hostname label.
+var hostLabelRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// ValidHostname accepts an RFC 1123 hostname or FQDN (lowercase). Empty means
+// "leave as-is" and is valid.
+func ValidHostname(name string) error {
+	if name == "" {
+		return nil
+	}
+	if len(name) > 253 {
+		return errors.New("hostname is longer than 253 characters")
+	}
+	for _, label := range strings.Split(name, ".") {
+		if !hostLabelRe.MatchString(label) {
+			return errors.New("use lowercase letters, digits and '-' (labels of 1-63 chars, separated by dots)")
+		}
+	}
+	return nil
+}
+
+// ValidPort reports whether p is a usable TCP port.
+func ValidPort(p int) error {
+	if p < 1 || p > 65535 {
+		return errors.New("port must be between 1 and 65535")
+	}
+	return nil
+}
+
+var (
+	telegramTokenRe  = regexp.MustCompile(`^[0-9]{5,}:[A-Za-z0-9_-]{30,}$`)
+	telegramChatIDRe = regexp.MustCompile(`^(-?[0-9]{1,20}|@[A-Za-z][A-Za-z0-9_]{4,31})$`)
+)
+
+// ValidTelegramToken checks the shape of a BotFather token ("123456:ABC…").
+func ValidTelegramToken(tok string) error {
+	if !telegramTokenRe.MatchString(tok) {
+		return errors.New("bot token should look like 123456789:AA… (from @BotFather)")
+	}
+	return nil
+}
+
+// ValidTelegramChatID accepts a numeric chat ID (negative for groups) or a
+// public @channelname.
+func ValidTelegramChatID(id string) error {
+	if !telegramChatIDRe.MatchString(id) {
+		return errors.New("chat ID should be a number (e.g. 123456789, or -100… for groups) or @channelname")
+	}
+	return nil
+}
+
+// Validate checks every field that drives a command, so replayed configs get
+// the same guarantees as the interactive wizard.
+func (c Config) Validate() error {
+	if err := ValidUsername(c.Username); err != nil {
+		return fmt.Errorf("username %q: %w", c.Username, err)
+	}
+	if c.Username == "root" {
+		return errors.New("username: the deploy user must not be root")
+	}
+	if err := ValidHostname(c.Hostname); err != nil {
+		return fmt.Errorf("hostname %q: %w", c.Hostname, err)
+	}
+	if err := ValidPort(c.SSHPort); err != nil {
+		return fmt.Errorf("ssh_port %d: %w", c.SSHPort, err)
+	}
+	if c.SwapGB < 0 || c.SwapGB > 128 {
+		return fmt.Errorf("swap_gb %d: must be between 0 and 128", c.SwapGB)
+	}
+	switch c.AdminKeySource {
+	case AdminKeyPaste, AdminKeyFile, AdminKeyGitHub, AdminKeySkip:
+	default:
+		return fmt.Errorf("admin_key_source %q: must be one of paste, file, github, skip", c.AdminKeySource)
+	}
+	if c.InstallPortainer {
+		switch c.PortainerAccess {
+		case PortainerTailnet, PortainerPublic:
+		default:
+			return fmt.Errorf("portainer_access %q: must be tailnet or public", c.PortainerAccess)
+		}
+	}
+	if c.EnableAlerts {
+		if c.AlertLoadPerCPU < 1 || c.AlertLoadPerCPU > 1000 {
+			return fmt.Errorf("alert_load_per_cpu %d: must be between 1 and 1000", c.AlertLoadPerCPU)
+		}
+		if c.AlertDiskPercent < 1 || c.AlertDiskPercent > 100 {
+			return fmt.Errorf("alert_disk_percent %d: must be between 1 and 100", c.AlertDiskPercent)
+		}
+		if err := ValidTelegramChatID(c.AlertsChatID); err != nil {
+			return fmt.Errorf("alerts_chat_id %q: %w", c.AlertsChatID, err)
+		}
+	}
+	return nil
 }
 
 // Save writes the Config to a YAML file. The deploy password is excluded by the

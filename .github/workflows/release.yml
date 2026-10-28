@@ -35,7 +35,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: stable # latest patched toolchain (stdlib is embedded)
           cache: true
 
       - name: Vet & test
@@ -43,12 +43,30 @@ jobs:
           go vet ./...
           go test ./...
 
+      - name: Resolve tag
+        id: tag
+        # Values arrive via env, never interpolated into the script, so a
+        # crafted tag/input can't inject shell.
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then TAG="$INPUT_TAG"; else TAG="$REF_NAME"; fi
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::release tag must look like v1.2.3 (got '$TAG')"; exit 1 ;;
+          esac
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
+
       - name: Build binaries
+        env:
+          VERSION: ${{ steps.tag.outputs.name }}
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
-              go build -ldflags "-s -w" -o dist/forge-linux-$arch .
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o dist/forge-linux-$arch .
           done
           ( cd dist && sha256sum forge-* > checksums.txt )
 
@@ -61,15 +79,6 @@ jobs:
           minisign -S -s /tmp/forge.key -m dist/checksums.txt
           rm -f /tmp/forge.key
           ls -l dist/checksums.txt.minisig
-
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
