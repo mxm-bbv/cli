@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strconv"
@@ -20,6 +21,8 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	pw, pw2 := "", ""
 	src := string(cfg.AdminKeySource)
 	pmode := string(cfg.PortainerAccess)
+	repos := strings.Join(cfg.GitHubRepos, ", ")
+	installCaddy, caddyRepo := cfg.CaddyRepo != "", cmp.Or(cfg.CaddyRepo, config.DefaultCaddyRepo)
 	if !cfg.InstallPortainer {
 		pmode = "off"
 	}
@@ -68,9 +71,15 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		).WithHideFunc(func() bool { return src == string(config.AdminKeySkip) }),
 
 		huh.NewGroup(
-			huh.NewConfirm().Title("Generate an ed25519 key for cloning private GitHub repos?").
-				Value(&cfg.GenerateGitHubKey),
-			huh.NewInput().Title("Key comment").Value(&cfg.GitHubKeyComment),
+			huh.NewNote().Title("GitHub").
+				Description("Private repos this server pulls from. forge creates a read-only deploy key\n"+
+					"for each and registers it through GitHub — you approve once with a code.\n"+
+					"Add more later:  sudo forge github owner/repo"),
+			huh.NewInput().Title("Repos (owner/repo, comma-separated — blank to skip)").Value(&repos).
+				Validate(func(s string) error {
+					_, err := config.ParseGitHubRepos(s)
+					return err
+				}),
 		),
 
 		huh.NewGroup(
@@ -84,6 +93,18 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		),
 
 		huh.NewGroup(
+			huh.NewNote().Title("Tailscale").
+				Description("A private network for admin access — Portainer and emergency SSH from your\n"+
+					"phone, invisible to the internet. forge only installs it; log in whenever\n"+
+					"you like:  sudo forge tailscale  (shows a QR code to scan)"),
+			huh.NewConfirm().Title("Install Tailscale?").Value(&cfg.InstallTailscale),
+		),
+		huh.NewGroup(
+			huh.NewConfirm().Title("Enable Tailscale SSH at login (emergency access from your phone)?").
+				Value(&cfg.TailscaleSSH),
+		).WithHideFunc(func() bool { return !cfg.InstallTailscale }),
+
+		huh.NewGroup(
 			huh.NewConfirm().Title("Docker daemon hardening + log rotation (daemon.json)?").Value(&cfg.EnableLogRotation),
 			huh.NewSelect[string]().Title("Portainer Agent access").
 				Description("An agent is root-equivalent. Published on 0.0.0.0:9001 it WILL be found and abused.").
@@ -91,26 +112,34 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 					huh.NewOption("Tailscale only — invisible to the internet (recommended)", "tailnet"),
 					huh.NewOption("Public :9001 with AGENT_SECRET (NOT recommended)", "public"),
 					huh.NewOption("Don't install Portainer Agent", "off"),
-				).Value(&pmode),
+				).Value(&pmode).
+				Validate(func(v string) error {
+					if v == "tailnet" && !cfg.InstallTailscale {
+						return errors.New("needs Tailscale — go back (shift+tab) and install it, or pick another option")
+					}
+					return nil
+				}),
 		),
+		huh.NewGroup(
+			huh.NewNote().Title("Web server").
+				Description("Your Caddy setup as the server's web server on :80/:443: cloned from GitHub\n"+
+					"(a private repo gets a read-only deploy key) and started with docker compose.\n"+
+					"Later:  sudo forge caddy"),
+			huh.NewConfirm().Title("Install your Caddy web server?").Value(&installCaddy),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("Caddy repo (owner/repo with a docker-compose.prod.yml)").Value(&caddyRepo).
+				Validate(config.ValidGitHubRepo),
+		).WithHideFunc(func() bool { return !installCaddy }),
+
 		huh.NewGroup(
 			huh.NewConfirm().Title("Install Watchtower (monitor-only update checks)?").Value(&cfg.InstallWatchtower),
 			huh.NewConfirm().Title("Enable firewall (UFW + fail2ban + DOCKER-USER container rules)?").Value(&cfg.EnableFirewall),
 			huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
+			huh.NewConfirm().Title("…and reboot at 04:00 when an update needs it (kernel fixes)?").Value(&cfg.AutoReboot),
+			huh.NewConfirm().Title("Kernel & network hardening (sysctl: no ICMP redirects, no unprivileged BPF…)?").
+				Value(&cfg.HardenKernel),
 		),
-
-		// Tailscale details — only when the agent rides the tailnet.
-		huh.NewGroup(
-			huh.NewNote().Title("Tailscale").
-				Description("During setup forge shows a link and a QR code: scan it with your phone,\n"+
-					"sign in to Tailscale (Google, GitHub, Microsoft…) and approve this server.\n"+
-					"Install the Tailscale app on your phone/laptop to reach Portainer."),
-			huh.NewInput().Title("Tailscale auth key (optional)").
-				Description("Leave empty to log in with the link/QR. A key is only for unattended setups.").
-				EchoMode(huh.EchoModePassword).Value(&cfg.TailscaleAuthKey),
-			huh.NewConfirm().Title("Enable Tailscale SSH (emergency access from your phone)?").
-				Value(&cfg.TailscaleSSH),
-		).WithHideFunc(func() bool { return pmode != "tailnet" }),
 
 		// Telegram alerts — the detection half: know when the box is in trouble.
 		huh.NewGroup(
@@ -126,12 +155,15 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 			huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).
 				Validate(config.ValidTelegramChatID),
 			huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
+			huh.NewConfirm().Title("Tripwire: alert within a minute on what intruders change?").
+				Description("New SSH keys, users, sudo rights, open ports, services, cron jobs, SUID files…").
+				Value(&cfg.Tripwire),
 		).WithHideFunc(func() bool { return !cfg.EnableAlerts }),
 
 		// SSH hardening — the dangerous bits, asked explicitly.
 		huh.NewGroup(
 			huh.NewNote().Title("⚠  SSH hardening").
-				Description("These run LAST. forge refuses to disable password auth unless a key is installed, and validates sshd -t before restart — so you can't lock yourself out."),
+				Description("These run LAST. forge refuses to disable password auth unless a key is installed, and validates sshd -t before restart — so you can't lock yourself out.\n\nThis is the last page: submitting it starts the setup."),
 			huh.NewInput().Title("SSH port").Value(&port).Validate(intRange(1, 65535)),
 			huh.NewConfirm().Title("Disable root login over SSH?").Value(&cfg.DisableRootLogin),
 			huh.NewConfirm().Title("Disable password authentication (key-only)?").Value(&cfg.DisablePassauth),
@@ -142,6 +174,11 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		return cfg, err
 	}
 
+	cfg.GitHubRepos, _ = config.ParseGitHubRepos(repos) // validated by the field
+	cfg.CaddyRepo = ""
+	if installCaddy {
+		cfg.CaddyRepo = caddyRepo
+	}
 	cfg.AdminKeySource = config.AdminKeySource(src)
 	cfg.SwapGB = atoiOr(swap, cfg.SwapGB)
 	cfg.SSHPort = atoiOr(port, cfg.SSHPort)
@@ -188,18 +225,6 @@ func AskPassword(username string) (string, error) {
 	return pw, nil
 }
 
-// Confirm shows a yes/no prompt with the given title.
-func Confirm(title string) (bool, error) {
-	ok := false
-	form := newForm(huh.NewGroup(
-		huh.NewConfirm().Title(title).Value(&ok),
-	))
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return ok, nil
-}
-
 // newForm builds a themed form that fits the terminal. huh sizes every group
 // to the tallest one, capped at the terminal height, but its view is one line
 // taller than that (the blank line above the help) — so on a short terminal
@@ -217,6 +242,18 @@ func fitHeight(_ tea.Model, msg tea.Msg) tea.Msg {
 		return ws
 	}
 	return msg
+}
+
+// Confirm shows a yes/no prompt (default: no).
+func Confirm(title, description string) (bool, error) {
+	ok := false
+	form := newForm(huh.NewGroup(
+		huh.NewConfirm().Title(title).Description(description).Value(&ok),
+	))
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 func nonEmpty(field string) func(string) error {

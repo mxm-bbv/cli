@@ -29,10 +29,16 @@ func firewallStep() Step {
 			// moves to a new port in the very last step; until then the old
 			// port must stay reachable (the hardening step closes it once the
 			// new one is verified).
-			rules := []string{fmt.Sprintf("%d/tcp", port)}
-			for _, p := range currentSSHPorts() {
-				if p != port {
-					rules = append(rules, fmt.Sprintf("%d/tcp", p))
+			//
+			// After `forge ssh tailnet-only` SSH stays closed to the internet:
+			// the operator chose that, and a re-run must not quietly undo it.
+			var rules []string
+			if !c.Cfg.SSHTailnetOnly {
+				rules = append(rules, fmt.Sprintf("%d/tcp", port))
+				for _, p := range currentSSHPorts() {
+					if p != port {
+						rules = append(rules, fmt.Sprintf("%d/tcp", p))
+					}
 				}
 			}
 			rules = append(rules, "80/tcp", "443/tcp")
@@ -44,7 +50,7 @@ func firewallStep() Step {
 			// Tailnet mode: trust the tailscale interface (host services like
 			// sshd stay reachable from your devices) and let WireGuard take
 			// direct connections instead of falling back to relays.
-			if c.Cfg.InstallPortainer && c.Cfg.PortainerAccess == config.PortainerTailnet {
+			if c.Cfg.InstallTailscale || tailnetAgent(c.Cfg) {
 				if _, err := system.Run("ufw", "allow", "in", "on", "tailscale0"); err != nil {
 					return err
 				}

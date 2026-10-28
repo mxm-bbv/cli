@@ -16,6 +16,9 @@ type Context struct {
 	AdminKeyInstalled bool            // true once a valid authorized_keys exists for the deploy user
 	TailnetIP         string          // populated by the tailscale step
 	AgentSecret       string          // AGENT_SECRET for pairing the Portainer Agent (shown once)
+	AgentDeferred     bool            // tailnet agent waits for `forge tailscale`
+	TailscaleLogin    bool            // log in to Tailscale now (browser/QR) instead of leaving it for later
+	GitHubRepos       []string        // repos whose deploy key works (ssh -T verified)
 	Notes             []string
 }
 
@@ -40,17 +43,42 @@ func BuildSteps(cfg config.Config) ([]Step, *Context) {
 		logRotationStep(),
 		userStep(),
 		sshKeysStep(),
+		githubStep(),    // deploy keys via the GitHub API, approved once with a code
 		tailscaleStep(), // before portainer: the agent binds to the tailnet IP
 		portainerStep(),
 		watchtowerStep(),
+		caddyStep(), // web server on :80/:443 (your caddy repo)
 		firewallStep(),
 		fail2banStep(),
 		dockerUserFirewallStep(), // containers must respect the firewall too
+		sysctlStep(),
 		autoUpdatesStep(),
 		alertsStep(),       // detection: Telegram push for audit/health/logins
-		sshHardeningStep(), // last: closes root / password login
+		sshHardeningStep(), // closes root / password login
+		tripwireStep(),     // last: its baseline is the finished server
 	}
 	return steps, c
+}
+
+// TailscaleSteps logs the box in to Tailscale (link + QR code in the runner)
+// and then starts what waited for the tailnet: the Portainer Agent in tailnet
+// mode. Re-running it is harmless.
+func TailscaleSteps(cfg config.Config) ([]Step, *Context) {
+	c := &Context{Cfg: cfg, TailscaleLogin: true}
+	agent := portainerStep()
+	agent.Skip = func(c *Context) bool { return !tailnetAgent(c.Cfg) }
+	return []Step{tailscaleStep(), agent}, c
+}
+
+// CaddySteps installs the caddy repo (with a deploy key if it is private).
+func CaddySteps(cfg config.Config) ([]Step, *Context) {
+	cfg.GitHubRepos = nil
+	return []Step{githubStep(), caddyStep()}, &Context{Cfg: cfg}
+}
+
+// GitHubSteps gives cfg.Username read-only deploy keys for cfg.GitHubRepos.
+func GitHubSteps(cfg config.Config) ([]Step, *Context) {
+	return []Step{githubStep()}, &Context{Cfg: cfg}
 }
 
 func always(*Context) bool { return false }

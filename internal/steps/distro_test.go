@@ -2,8 +2,10 @@ package steps
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -378,10 +380,38 @@ func TestLegacySSHRCRemoval(t *testing.T) {
 func TestTailscaleBrowserLogin(t *testing.T) {
 	dryRunAs(t, ubuntuNoble, false)
 	cfg := testConfig()
-	cfg.TailscaleAuthKey = "" // no key: log in with a link/QR
+	cfg.TailscaleAuthKey = "" // no key: setup only installs Tailscale
+
+	// Setup: install, but don't log in — and don't start a tailnet agent with
+	// no tailnet address to bind to.
 	ctx, log := runAll(t, cfg)
+	if strings.Contains(log, "tailscale up") || strings.Contains(log, "portainer/agent") {
+		t.Errorf("setup must leave the Tailscale login (and the agent) for later:\n%s", log)
+	}
+	if !strings.Contains(log, "install -y --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold tailscale") {
+		t.Error("Tailscale must still be installed")
+	}
+	if !ctx.AgentDeferred || !strings.Contains(strings.Join(ctx.Notes, "\n"), "sudo forge tailscale") {
+		t.Errorf("the summary must say how to log in later: %q", ctx.Notes)
+	}
+
+	// `forge tailscale`: interactive login, then the agent on the tailnet IP.
+	system.CommandLog = nil
+	st, ctx := TailscaleSteps(cfg)
+	for _, s := range st {
+		if s.Skip != nil && s.Skip(ctx) {
+			continue
+		}
+		if err := s.Run(ctx); err != nil {
+			t.Fatalf("step %q failed: %v", s.Name, err)
+		}
+	}
+	log = strings.Join(system.CommandLog, "\n")
 	if !strings.Contains(log, "tailscale up --ssh") || strings.Contains(log, "--auth-key") {
 		t.Errorf("expected an interactive `tailscale up --ssh` without a key:\n%s", log)
+	}
+	if !strings.Contains(log, "-p <tailnet-ip>:9001:9001") {
+		t.Errorf("the agent must start on the tailnet IP after login:\n%s", log)
 	}
 	if !strings.Contains(strings.Join(ctx.Notes, "\n"), "Disable key expiry") {
 		t.Error("browser-approved machines expire — the summary must say how to disable key expiry")
@@ -397,5 +427,96 @@ func TestTailscaleBrowserLogin(t *testing.T) {
 	a := system.CurrentAttention()
 	if a == nil || a.URL != "https://login.tailscale.com/a/1a2b3c4d5e6f" {
 		t.Fatalf("login URL not captured: %+v", a)
+	}
+}
+
+// TestGitHubDeviceCode: the code line gh prints (captured from gh 2.103 run
+// without a terminal) becomes an operator action with the code and the URL.
+func TestGitHubDeviceCode(t *testing.T) {
+	t.Cleanup(func() { system.SetAttention(nil) })
+	watchGitHubLogin("! Failed to copy one-time code to clipboard")
+	if system.CurrentAttention() != nil {
+		t.Fatal("no code yet — nothing to show")
+	}
+	watchGitHubLogin("! First copy your one-time code: 6830-73D2")
+	a := system.CurrentAttention()
+	if a == nil || a.Code != "6830-73D2" || a.URL != "https://github.com/login/device" {
+		t.Fatalf("device code not captured: %+v", a)
+	}
+}
+
+func TestDeployKeyNames(t *testing.T) {
+	a, b := deployKeyFor("/h/.ssh", "a/b-c"), deployKeyFor("/h/.ssh", "a-b/c")
+	if a.alias == b.alias || a.path == b.path {
+		t.Errorf("different repos must get different keys: %+v %+v", a, b)
+	}
+	if k := deployKeyFor("/h/.ssh", "Mxm-Bbv/App"); k.alias != "github-mxm-bbv--app" || k.path != "/h/.ssh/github-mxm-bbv--app" {
+		t.Errorf("unexpected naming: %+v", k)
+	}
+}
+
+// TestSSHDCryptoPolicy: weak algorithms are removed from OpenSSH's defaults
+// with "-" lists (valid on 8.9–10.x, verified with sshd -t on every supported
+// release) rather than replaced by a fixed list that would drop ML-KEM.
+func TestSSHDCryptoPolicy(t *testing.T) {
+	conf := renderSSHDDropIn(sshdOptions(testConfig()))
+	for _, want := range []string{
+		"KexAlgorithms -ecdh-sha2-nistp256,",
+		"MACs -umac-64-etm@openssh.com,",
+		"LogLevel VERBOSE",
+		"X11Forwarding no",
+		"AllowAgentForwarding no",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("drop-in lacks %q:\n%s", want, conf)
+		}
+	}
+	for _, risky := range []string{"MaxAuthTries", "AllowTcpForwarding", "Ciphers ", "HostKeyAlgorithms"} {
+		if strings.Contains(conf, risky) {
+			t.Errorf("%s locks out agents with several keys / VS Code / pinned host keys — leave the default", risky)
+		}
+	}
+}
+
+func TestTailnetAddresses(t *testing.T) {
+	for ip, want := range map[string]bool{
+		"100.101.102.103": true, "100.64.0.1": true, "[fd7a:115c:a1e0::1]": true,
+		"100.128.0.1": false, "203.0.113.7": false, "10.0.0.5": false, "": false,
+	} {
+		if got := IsTailnetIP(ip); got != want {
+			t.Errorf("IsTailnetIP(%q) = %v, want %v", ip, got, want)
+		}
+	}
+}
+
+// TestFirewallKeepsSSHTailnetOnly: once SSH was closed to the internet, a
+// re-run of the setup must not reopen it.
+func TestFirewallKeepsSSHTailnetOnly(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	cfg := testConfig()
+	cfg.SSHTailnetOnly = true
+	_, log := runAll(t, cfg)
+	for _, rule := range []string{"ufw allow 22/tcp", "ufw allow 2222/tcp"} {
+		if strings.Contains(log, rule) {
+			t.Errorf("tailnet-only SSH reopened by %q", rule)
+		}
+	}
+	if !strings.Contains(log, "ufw allow in on tailscale0") {
+		t.Error("the tailnet must stay trusted, or nobody gets in")
+	}
+}
+
+// TestSessionClient: sudo strips SSH_CONNECTION, so the client address is
+// read from the nearest ancestor that still has it.
+func TestSessionClient(t *testing.T) {
+	if os.Getenv("FORGE_SESSION_HELPER") == "1" {
+		fmt.Print(SessionClient())
+		os.Exit(0)
+	}
+	cmd := exec.Command("sh", "-c", `env -u SSH_CONNECTION FORGE_SESSION_HELPER=1 "$0" -test.run '^TestSessionClient$'`, os.Args[0])
+	cmd.Env = append(os.Environ(), "SSH_CONNECTION=100.64.1.2 51234 203.0.113.7 22")
+	out, err := cmd.Output()
+	if err != nil || string(out) != "100.64.1.2" {
+		t.Fatalf("got %q (%v), want the shell's SSH client 100.64.1.2", out, err)
 	}
 }

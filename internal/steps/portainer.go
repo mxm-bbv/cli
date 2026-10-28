@@ -3,7 +3,6 @@ package steps
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"strings"
 
 	"github.com/mxm-bbv/cli/internal/config"
@@ -22,10 +21,12 @@ func portainerStep() Step {
 			bindIP := ""
 			if c.Cfg.PortainerAccess == config.PortainerTailnet {
 				if c.TailnetIP == "" {
-					if !system.DryRun {
-						return errors.New("tailnet mode but no tailnet IP — the Tailscale step must run first")
-					}
-					c.TailnetIP = "<tailnet-ip>"
+					// Not logged in to Tailscale yet: there is no address to
+					// bind to, and 0.0.0.0 is not an option. `forge tailscale`
+					// starts the agent right after login.
+					c.AgentDeferred = true
+					c.Notes = append(c.Notes, "Portainer Agent starts right after Tailscale login (sudo forge tailscale) — it binds to the tailnet IP only")
+					return nil
 				}
 				bindIP = c.TailnetIP
 			}

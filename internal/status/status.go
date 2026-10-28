@@ -53,7 +53,7 @@ func Run() int {
 	if ts := cmd("tailscale", "ip", "-4"); ts != "" {
 		row("Tailscale:", firstLine(ts)+"  "+ui.StyleOK.Render("up"))
 	} else if has("tailscale") {
-		row("Tailscale:", ui.StyleWarn.Render("installed but not connected"))
+		row("Tailscale:", ui.StyleWarn.Render("installed, not logged in — sudo forge tailscale"))
 	}
 
 	// Firewall.

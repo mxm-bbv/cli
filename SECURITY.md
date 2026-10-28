@@ -15,6 +15,7 @@ deliberate, reviewable act.
 |--------|-------|--------|
 | Docker apt key fingerprint | `9DC858229FC7DD38854AE2D88D81803C0EBFCD88` | docs.docker.com |
 | Tailscale apt key fingerprint | `2596A99EAAB33821893C0A79458CA832957F5868` | pkgs.tailscale.com |
+| GitHub CLI apt key fingerprint | `7F38BBB59D064DBCB3D84D725612B36462313325` | cli.github.com/packages |
 | GitHub host key (ed25519) | `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` | docs.github.com |
 | forge release minisign key | `RWSk3LOux6EkxZOpVER2fnvn2WKOHPBPG128iEhEy3JGztPOte98a+3C` | this repo (`pins.go`) |
 | Portainer Agent image | `portainer/agent:2.39.1` (keep in lockstep with your Portainer Server) | Docker Hub |
@@ -40,8 +41,29 @@ deliberate, reviewable act.
   does **not** mount `/:/host`; only the docker socket and volume dir it needs.
   Re-running forge on a box with an insecurely-bound agent replaces it.
 - **Tailscale** — installed from Tailscale's apt repo with the signing key
-  fingerprint-verified fail-closed, same as Docker's. The auth key is prompted
-  at runtime and never written to disk or logs.
+  fingerprint-verified fail-closed, same as Docker's. Setup only installs it;
+  the operator logs in later with `forge tailscale` (browser/QR). Until then a
+  tailnet-mode Portainer Agent is simply not started — it is never bound to
+  `0.0.0.0` as a stopgap. An optional `TS_AUTHKEY` (unattended runs) is read
+  from the environment and never written to disk or logs.
+- **GitHub deploy keys** — one ed25519 key per repo, registered as a
+  **read-only deploy key**: a compromised server can read those repos and
+  nothing else (an account SSH key would read and push everything). The keys
+  are added through the GitHub API by the official GitHub CLI (apt repo,
+  fingerprint-pinned) after a one-time device-code approval. Its token lives
+  only in `/run/forge-gh` (tmpfs, root-only) and is deleted right after —
+  also when forge is aborted, which kills a login still waiting for approval.
+- **Tripwire** — `forge tripwire` (systemd timer, every minute, low
+  priority) snapshots the usual persistence points and sends every
+  difference from the last run to Telegram once; an alert that couldn't be
+  sent is retried. forge re-records the baseline after its own changes.
+  Root can of course disable it — it is there to catch the minutes between
+  the break-in and that.
+- **SSH over Tailscale only (optional)** — `forge ssh tailnet-only` removes
+  sshd's ports from UFW (`tailscale0` stays trusted) only when the operator's
+  current session comes from a tailnet address and the node key does not
+  expire — the two ways this would lock you out. The provider's web console
+  is the last resort; the setup remembers the choice and doesn't reopen it.
 - **DOCKER-USER firewall** — Docker inserts its own iptables chains ahead of
   UFW's INPUT rules, so `ufw default deny incoming` does **not** protect
   `-p`-published container ports. forge installs a persistent DOCKER-USER

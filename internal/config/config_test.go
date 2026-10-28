@@ -86,3 +86,33 @@ func TestSaveNeverWritesSecrets(t *testing.T) {
 		t.Errorf("config mode = %o, want 600", info.Mode().Perm())
 	}
 }
+
+func TestParseGitHubRepos(t *testing.T) {
+	got, err := ParseGitHubRepos("mxm-bbv/app, https://github.com/mxm-bbv/site.git git@github.com:Org/api.git\nmxm-bbv/APP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"mxm-bbv/app", "mxm-bbv/site", "Org/api"}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("got %q, want %q (URLs stripped, case-insensitive duplicates dropped)", got, want)
+	}
+	if got, err := ParseGitHubRepos("  "); err != nil || len(got) != 0 {
+		t.Errorf("blank input must mean no repos, got %q %v", got, err)
+	}
+	for _, bad := range []string{"app", "a/b/c", "-x/app", "o/..", "o/a;rm"} {
+		if _, err := ParseGitHubRepos(bad); err == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+}
+
+func TestTailnetNeedsTailscale(t *testing.T) {
+	cfg := Default()
+	cfg.InstallTailscale = false
+	if err := cfg.Validate(); err == nil {
+		t.Error("a tailnet-only Portainer Agent without Tailscale must be rejected")
+	}
+	cfg.PortainerAccess = PortainerPublic
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("public agent without Tailscale is allowed: %v", err)
+	}
+}

@@ -12,7 +12,17 @@ const (
 	etcHosts           = "/etc/hosts"
 	cloudInitDir       = "/etc/cloud/cloud.cfg.d"
 	cloudInitHostnameF = "/etc/cloud/cloud.cfg.d/99-forge-hostname.cfg"
+	journaldDropIn     = "/etc/systemd/journald.conf.d/90-forge.conf"
 )
+
+// journaldLimits caps the system journal. journald's own cap is 10% of the
+// filesystem — up to 4 GB — which on a 20–40 GB VPS disk competes with images
+// and volumes; a month of logs is plenty for diagnosis.
+const journaldLimits = `# forge: keep the journal small on a VPS disk.
+[Journal]
+SystemMaxUse=500M
+MaxRetentionSec=1month
+`
 
 func baseStep() Step {
 	return Step{
@@ -38,6 +48,18 @@ func baseStep() Step {
 			// Handy operator utilities.
 			if err := aptInstall("htop", "ncdu", "git", "curl", "vim", "tmux", "unzip", "jq"); err != nil {
 				return err
+			}
+
+			if !system.FileExists(journaldDropIn) {
+				if _, err := system.Run("install", "-m", "0755", "-d", "/etc/systemd/journald.conf.d"); err != nil {
+					return err
+				}
+				if err := system.WriteFile(journaldDropIn, journaldLimits, 0o644); err != nil {
+					return err
+				}
+				if _, err := system.Run("systemctl", "restart", "systemd-journald"); err != nil {
+					return err
+				}
 			}
 
 			return ensureSwap(c)

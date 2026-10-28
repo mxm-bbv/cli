@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
@@ -288,7 +290,11 @@ func attentionPanel(a *system.Attention, width, rows int) string {
 		qr := QRCode(a.URL)
 		qrRows, qrCols := strings.Count(qr, "\n")+1, ansi.StringWidth(strings.SplitN(qr, "\n", 2)[0])
 		// rows <= 0: terminal size unknown — show it rather than hide it.
-		fits := qr != "" && qrCols+8 <= width && (rows <= 0 || qrRows+9 <= rows)
+		extra := 9
+		if a.Code != "" {
+			extra += 2
+		}
+		fits := qr != "" && qrCols+8 <= width && (rows <= 0 || qrRows+extra <= rows)
 		if fits {
 			parts = append(parts, "", qr)
 		}
@@ -296,6 +302,11 @@ func attentionPanel(a *system.Attention, width, rows int) string {
 		if !fits && qr != "" {
 			parts = append(parts, StyleMuted.Render("(enlarge the terminal to get a QR code for your phone)"))
 		}
+	}
+	if a.Code != "" {
+		code := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#000000")).
+			Background(ColorGold).Padding(0, 1).Render(a.Code)
+		parts = append(parts, "", StyleKey.Render("Code: ")+code)
 	}
 	if a.Hint != "" {
 		parts = append(parts, "", StyleMuted.Width(min(max(width-12, 20), 70)).Render(a.Hint))
@@ -377,13 +388,12 @@ func Summary(ctx *steps.Context, dryRun bool, logPath string) string {
 			onOff(!cfg.DisableRootLogin), onOff(!cfg.DisablePassauth)),
 	}
 	if cfg.InstallPortainer {
-		if cfg.PortainerAccess == config.PortainerTailnet {
-			ip := ctx.TailnetIP
-			if ip == "" {
-				ip = "<tailnet-ip>"
-			}
+		if ctx.AgentDeferred {
+			rows = append(rows, fmt.Sprintf("%s  %s", StyleKey.Render("Portainer Agent:"),
+				StyleWarn.Render("starts after Tailscale login —  sudo forge tailscale")))
+		} else if cfg.PortainerAccess == config.PortainerTailnet {
 			rows = append(rows, fmt.Sprintf("%s  %s:9001 %s", StyleKey.Render("Portainer Agent:"),
-				ip, StyleOK.Render("(tailnet only — invisible to the internet)")))
+				ctx.TailnetIP, StyleOK.Render("(tailnet only — invisible to the internet)")))
 		} else {
 			rows = append(rows, fmt.Sprintf("%s  %s:9001 %s", StyleKey.Render("Portainer Agent:"),
 				system.PrimaryIP(), StyleWarn.Render("(PUBLIC — protected only by AGENT_SECRET)")))
@@ -391,24 +401,7 @@ func Summary(ctx *steps.Context, dryRun bool, logPath string) string {
 	}
 	b.WriteString(StyleBox.Render(strings.Join(rows, "\n")) + "\n")
 
-	if cfg.InstallPortainer && ctx.AgentSecret != "" {
-		b.WriteString("\n" + StyleTitle.Render("  Portainer AGENT_SECRET") +
-			StyleMuted.Render("  — enter it when adding this endpoint in Portainer (shown only once):") + "\n")
-		b.WriteString(StyleBox.Render(ctx.AgentSecret) + "\n")
-	}
-
-	if ctx.GitHubPubKey != "" {
-		b.WriteString("\n" + StyleTitle.Render("  GitHub deploy key") +
-			StyleMuted.Render("  — add to repo → Settings → Deploy keys:") + "\n")
-		b.WriteString(StyleBox.Render(ctx.GitHubPubKey) + "\n")
-	}
-
-	if len(ctx.Notes) > 0 {
-		b.WriteString("\n" + StyleKey.Render("  Notes:") + "\n")
-		for _, n := range ctx.Notes {
-			b.WriteString("    • " + n + "\n")
-		}
-	}
+	writeArtifacts(&b, ctx)
 
 	if !dryRun && (cfg.DisableRootLogin || cfg.DisablePassauth) {
 		warn := strings.Join([]string{
@@ -425,6 +418,52 @@ func Summary(ctx *steps.Context, dryRun bool, logPath string) string {
 		b.WriteString("\n" + StyleMuted.Render("  Full log: "+logPath) + "\n")
 	}
 	return b.String()
+}
+
+// Report renders the short report of a follow-up command (`forge tailscale`,
+// `forge github`): what it produced and the notes, without the host overview.
+func Report(title string, ctx *steps.Context, logPath string) string {
+	var b strings.Builder
+	b.WriteString(StyleOK.Render("  "+title+"  ") + "\n")
+	if ctx.TailnetIP != "" {
+		b.WriteString("\n" + StyleKey.Render("  Tailnet IP: ") + ctx.TailnetIP + "\n")
+		if ctx.AgentSecret != "" {
+			b.WriteString(StyleKey.Render("  Portainer Agent: ") + ctx.TailnetIP + ":9001\n")
+		}
+	}
+	writeArtifacts(&b, ctx)
+	if logPath != "" {
+		b.WriteString("\n" + StyleMuted.Render("  Full log: "+logPath) + "\n")
+	}
+	return b.String()
+}
+
+// writeArtifacts appends the one-time values a run produced and its notes.
+func writeArtifacts(b *strings.Builder, ctx *steps.Context) {
+	if ctx.AgentSecret != "" {
+		b.WriteString("\n" + StyleTitle.Render("  Portainer AGENT_SECRET") +
+			StyleMuted.Render("  — enter it when adding this endpoint in Portainer (shown only once):") + "\n")
+		b.WriteString(StyleBox.Render(ctx.AgentSecret) + "\n")
+	}
+
+	if ctx.GitHubPubKey != "" {
+		b.WriteString("\n" + StyleTitle.Render("  GitHub deploy key") +
+			StyleMuted.Render("  — add to repo → Settings → Deploy keys:") + "\n")
+		b.WriteString(StyleBox.Render(ctx.GitHubPubKey) + "\n")
+	}
+
+	if len(ctx.Notes) > 0 {
+		b.WriteString("\n" + StyleKey.Render("  Notes:") + "\n")
+		width := 100
+		if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil && w > 0 {
+			width = min(w, 100)
+		}
+		for _, n := range ctx.Notes {
+			// Wrap at word boundaries, continuation lines under the text.
+			wrapped := ansi.Wordwrap(n, max(width-7, 30), "")
+			b.WriteString("    • " + strings.ReplaceAll(wrapped, "\n", "\n      ") + "\n")
+		}
+	}
 }
 
 func portOrDefault(p int) int {

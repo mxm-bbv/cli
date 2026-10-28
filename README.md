@@ -36,16 +36,20 @@ hostname overrides, snap-packaged Docker, and LXC/OpenVZ containers (no swap).
 |-------------|---------|
 | **Docker**  | Docker Engine + Compose V2 + Buildx from the official apt repo |
 | **Daemon**  | `daemon.json`: json-file log rotation (10m × 3), `no-new-privileges` for every container, `live-restore` |
-| **Tailscale** | Joins your tailnet (fingerprint-verified apt repo) — **sign in by scanning a QR code** with your phone, no auth key needed (keys are optional, for unattended runs); optional Tailscale SSH for emergency phone access |
+| **Tailscale** | Installs Tailscale (fingerprint-verified apt repo); **log in whenever you like** with `sudo forge tailscale` — scan a QR code with your phone, no auth key. The tailnet-only Portainer Agent starts right after that login. Optional Tailscale SSH for emergency phone access. Unattended runs: `TS_AUTHKEY=… sudo forge` |
 | **Portainer** | Portainer Agent bound to the **tailnet IP only** + `AGENT_SECRET` (public `0.0.0.0:9001` is a known root-compromise vector; a discouraged public+secret mode exists) |
 | **Watchtower** | **Monitor-only** update checks — never auto-replaces containers (optional; maintained `nickfedor/watchtower` fork) |
 | **User**    | Creates `deploy` with a password you set, in the `sudo` and `docker` groups |
-| **SSH keys**| Imports *your* public key into `authorized_keys`; generates an ed25519 **deploy key for GitHub** (+ `known_hosts` + `~/.ssh/config`) |
-| **Hardening** | `sshd`: disable root login, key-only auth, optional port change, `AllowUsers` — in `sshd_config.d/00-forge.conf`, validated with `sshd -t`, read back with `sshd -T`, rolled back on any failure |
+| **SSH keys**| Imports *your* public key into `authorized_keys` |
+| **GitHub**  | One **read-only deploy key per repo** you list, registered through the GitHub API — approve once with a one-time code on your phone; forge throws the login away afterwards. `git clone git@github.com:owner/repo.git` just works as the deploy user. More repos later: `sudo forge github owner/repo` |
+| **Hardening** | `sshd`: disable root login, key-only auth, optional port change, `AllowUsers`, no NIST-curve/SHA-1 key exchange or MACs (post-quantum ML-KEM stays on where OpenSSH has it), no agent/X11 forwarding, 30 s login grace — in `sshd_config.d/00-forge.conf`, validated with `sshd -t`, read back with `sshd -T`, rolled back on any failure |
+| **Kernel** | `sysctl.d/90-forge.conf`: no ICMP redirects or source routing, anti-spoofing (loose `rp_filter`, Tailscale-safe), SYN cookies, hidden kernel pointers and `dmesg`, no unprivileged BPF, restricted `ptrace` and setuid core dumps |
 | **Firewall** | UFW (allow SSH/80/443; the old SSH port stays open until sshd answers on the new one) + fail2ban SSH jail (journald) + **DOCKER-USER rules** (IPv4 + IPv6) so published container ports can't bypass UFW |
-| **Updates** | unattended-upgrades for automatic security patches |
+| **Updates** | unattended-upgrades for automatic security patches; `needrestart` restarts services still running old libraries; optional reboot at 04:00 when a kernel fix needs it |
 | **Alerts**  | Telegram push (optional): daily `forge audit`, host-health warnings (load/disk/reboot), SSH-login notices |
-| **Base**    | hostname (+ `/etc/hosts`, kept across cloud-init reboots), timezone, NTP, swap file, operator utilities (htop, ncdu, jq, tmux…) |
+| **Tripwire** | With alerts: every minute, a Telegram alarm on what intruders change to stay — new SSH keys (and `command=`/`from=` options), accounts, sudo rights, sshd auth policy, listening ports, systemd units, cron jobs, startup files (`ld.so.preload`, `.bashrc`…), SUID/SGID files, kernel taint from foreign modules, container images. Each change is reported once; forge's own changes never alarm |
+| **Web server** | Your Caddy setup (`caddy_repo`, a repo with `docker-compose.prod.yml`) on :80/:443 — a private repo is cloned with its own read-only deploy key; creates the `proxy-network` network and `PROJECTS_PATH` |
+| **Base**    | hostname (+ `/etc/hosts`, kept across cloud-init reboots), timezone, NTP, swap file, journal capped at 500 MB, operator utilities (htop, ncdu, jq, tmux…) |
 | **Audit**   | `sudo forge audit` — read-only scan for rootkit/proxyjacking IOCs and risky Docker exposure |
 
 ## Day-2 commands
@@ -58,6 +62,11 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `forge status` | One-glance summary: Docker, agent exposure, firewall, tailnet, alert timers, swap |
 | `forge lint <compose.yml>` | Static-check a Compose file **before** deploy for the same risky settings |
 | `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
+| `sudo forge tailscale` | Log in to Tailscale (QR code) and start the tailnet-only Portainer Agent. Safe to re-run |
+| `sudo forge github owner/repo …` | Add read-only deploy keys for more repos (one-time code on your phone) |
+| `sudo forge caddy [owner/repo]` | Install or update the Caddy web server from your repo |
+| `sudo forge ssh tailnet-only` | **Optional**: close SSH to the internet, so only Tailscale reaches it. Refuses unless you're connected over Tailscale right now and the node key never expires; `sudo forge ssh public` reopens it, `sudo forge ssh` shows the state |
+| `sudo forge tripwire --show` | What the tripwire watches right now (`--baseline` re-records it) |
 | `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |
 
 Every step is **idempotent** — re-running skips what's already done. SSH
@@ -110,10 +119,11 @@ prompt), installs the binary as `/usr/local/bin/forge` (via `sudo` when you
 log in as a regular user) and hands the wizard your terminal. Keep that
 session open until you've checked the new SSH login, as usual.
 
-The wizard walks you through the deploy user, your SSH key, GitHub key,
-features and hardening, shows a confirmation, then executes with a live
-progress view. At the end it prints a summary including the **GitHub public
-key to paste into your repo's Deploy keys**.
+The wizard walks you through the deploy user, your SSH key, GitHub repos,
+features and hardening; submitting the last page starts the setup, with a live
+progress view. At the end it prints a summary with what to do next (e.g.
+`sudo forge tailscale`). Your answers (no secrets) are kept in
+`/etc/forge/config.yaml` for those follow-up commands.
 
 ### Flags
 
@@ -123,14 +133,13 @@ key to paste into your repo's Deploy keys**.
 | `--dry-run` | Walk the wizard and print every action without changing anything (works without root) |
 | `--config <file>` | Replay answers from a YAML file (only the password is prompted) |
 | `--save-config <file>` | Save your answers to YAML for reuse (the password is **never** written) |
-| `--yes` | Skip the final confirmation prompt |
 | `--version` | Print version and exit |
 
 ### Reusable config
 
 ```bash
 sudo ./forge --save-config server.yaml      # run once, save answers
-sudo ./forge --config server.yaml --yes     # replay on the next box
+sudo ./forge --config server.yaml           # replay on the next box
 ```
 
 ## ⚠ Safety
@@ -145,7 +154,7 @@ before restarting, but it can't test *your* key for you.
 Supply-chain hardening is a first-class concern — see [`SECURITY.md`](SECURITY.md)
 for the full picture. In short:
 
-- Docker's and Tailscale's apt keys are **fingerprint-verified** (fail-closed) before they can sign packages.
+- Docker's, Tailscale's and GitHub CLI's apt keys are **fingerprint-verified** (fail-closed) before they can sign packages.
 - Container images are **pinned to versions** (never `:latest`) and run with `no-new-privileges`.
 - The Portainer Agent is **never published to the internet by default**: it binds to the
   tailnet IP and requires an `AGENT_SECRET` to pair. An exposed agent is root-equivalent.

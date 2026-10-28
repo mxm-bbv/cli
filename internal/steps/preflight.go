@@ -83,6 +83,7 @@ func aptEnvReady() {
 // aptGet runs apt-get with a lock timeout, so a background apt-daily run on a
 // freshly booted VM makes us wait (up to 5 min) instead of failing outright.
 func aptGet(args ...string) (string, error) {
+	aptEnvReady() // also for subcommands that run without preflight
 	full := append([]string{"-o", "DPkg::Lock::Timeout=300"}, args...)
 	return system.Run("apt-get", full...)
 }

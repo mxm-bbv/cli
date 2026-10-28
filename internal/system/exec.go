@@ -58,6 +58,7 @@ func Activity() string {
 type Attention struct {
 	Title string
 	URL   string
+	Code  string // one-time code to type at URL (device login), if any
 	Hint  string
 }
 
@@ -80,6 +81,22 @@ func CurrentAttention() *Attention {
 	return attention
 }
 
+var (
+	waitingMu sync.Mutex
+	waiting   = map[*os.Process]bool{}
+)
+
+// StopWaiting kills the commands still waiting on the operator (RunWatch*),
+// such as a login nobody will approve because forge is exiting. Without it they
+// outlive forge — and a late approval would hand them a token.
+func StopWaiting() {
+	waitingMu.Lock()
+	defer waitingMu.Unlock()
+	for p := range waiting {
+		_ = p.Kill()
+	}
+}
+
 // Run executes a command, streaming its output to the log and live display, and
 // returns the combined output.
 func Run(name string, args ...string) (string, error) {
@@ -98,6 +115,12 @@ func RunRedacted(logline, name string, args ...string) (string, error) {
 // something the operator must act on while they wait, such as a login URL.
 func RunWatch(logline string, onLine func(string), name string, args ...string) (string, error) {
 	return executeEnv(logline, name, args, "", nil, onLine)
+}
+
+// RunWatchEnv is RunWatch with extra KEY=VALUE environment entries (never
+// logged).
+func RunWatchEnv(logline string, env []string, onLine func(string), name string, args ...string) (string, error) {
+	return executeEnv(logline, name, args, "", env, onLine)
 }
 
 // RunEnv executes like Run but with extra KEY=VALUE entries appended to the
@@ -169,7 +192,18 @@ func executeEnv(logline, name string, args []string, stdin string, extraEnv []st
 		close(done)
 	}()
 
-	runErr := cmd.Run()
+	runErr := cmd.Start()
+	if runErr == nil {
+		if onLine != nil {
+			waitingMu.Lock()
+			waiting[cmd.Process] = true
+			waitingMu.Unlock()
+		}
+		runErr = cmd.Wait()
+		waitingMu.Lock()
+		delete(waiting, cmd.Process)
+		waitingMu.Unlock()
+	}
 	pw.Close()
 	<-done
 	setActivity("")
