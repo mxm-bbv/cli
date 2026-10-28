@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/mxm-bbv/cli/internal/audit"
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/lint"
@@ -40,6 +38,10 @@ func main() {
 				os.Exit(2)
 			}
 			os.Exit(lint.Run(os.Args[2]))
+		case "tailscale":
+			os.Exit(runTailscale())
+		case "github":
+			os.Exit(runGitHub(os.Args[2:]))
 		case "update":
 			if len(os.Args) > 2 && os.Args[2] == "images" {
 				os.Exit(update.Images())
@@ -55,11 +57,11 @@ func main() {
 	}
 
 	var (
-		dryRun    = flag.Bool("dry-run", false, "print the actions without changing anything")
-		cfgPath   = flag.String("config", "", "load wizard answers from a YAML file (non-interactive)")
-		savePath  = flag.String("save-config", "", "save the wizard answers to a YAML file")
-		assumeYes = flag.Bool("yes", false, "skip the final confirmation prompt")
-		showVer   = flag.Bool("version", false, "print version and exit")
+		dryRun   = flag.Bool("dry-run", false, "print the actions without changing anything")
+		cfgPath  = flag.String("config", "", "load wizard answers from a YAML file (non-interactive)")
+		savePath = flag.String("save-config", "", "save the wizard answers to a YAML file")
+		_        = flag.Bool("yes", false, "no-op, kept for older scripts (there is no final prompt)")
+		showVer  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
 
@@ -120,28 +122,19 @@ func main() {
 		ui.Println(ui.StyleOK.Render("  Saved answers to " + *savePath + " (password excluded)\n"))
 	}
 
-	// Final confirmation.
-	if !*assumeYes {
-		ok, err := ui.Confirm(confirmTitle(cfg, *dryRun))
-		if err != nil || !ok {
-			ui.Println(ui.StyleMuted.Render("  Aborted."))
-			return
+	// Unattended Tailscale login (CI, image builds): Tailscale's usual env var.
+	cfg.TailscaleAuthKey = os.Getenv("TS_AUTHKEY")
+
+	// Keep the answers for `forge tailscale` / `forge github` later on.
+	if !*dryRun {
+		if err := saveState(cfg); err != nil {
+			ui.Println(ui.StyleWarn.Render("  could not save " + config.StatePath + ": " + err.Error()))
 		}
 	}
 
 	// Execute.
 	st, ctx := steps.BuildSteps(cfg)
-	model := ui.NewRunner(st, ctx, logPath)
-	prog := tea.NewProgram(model)
-	final, err := prog.Run()
-	if err != nil {
-		ui.Println(ui.StyleErr.Render("  runner error: " + err.Error()))
-		os.Exit(1)
-	}
-
-	rm := final.(ui.RunnerModel)
-	if rm.Failed {
-		ui.Println(ui.StyleErr.Render("\n  Aborted with a failed step. Full log: " + logPath))
+	if !runSteps(st, ctx, logPath) {
 		os.Exit(1)
 	}
 
@@ -184,14 +177,6 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 			return cfg, err
 		}
 		cfg.DeployPassword = pw
-		// Secrets are never serialised — the tailnet auth key is re-prompted.
-		if cfg.InstallPortainer && cfg.PortainerAccess == config.PortainerTailnet {
-			key, err := ui.AskSecret("Tailscale auth key (optional — leave empty to log in with a link/QR code)")
-			if err != nil {
-				return cfg, err
-			}
-			cfg.TailscaleAuthKey = key
-		}
 		if cfg.EnableAlerts {
 			tok, err := ui.AskSecret("Telegram bot token")
 			if err != nil {
@@ -209,11 +194,4 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 		return cfg, err
 	}
 	return cfg, cfg.Validate()
-}
-
-func confirmTitle(cfg config.Config, dryRun bool) string {
-	if dryRun {
-		return "Show the plan for a dry run? (no changes will be made)"
-	}
-	return fmt.Sprintf("Provision this server now as user %q?", cfg.Username)
 }

@@ -378,10 +378,38 @@ func TestLegacySSHRCRemoval(t *testing.T) {
 func TestTailscaleBrowserLogin(t *testing.T) {
 	dryRunAs(t, ubuntuNoble, false)
 	cfg := testConfig()
-	cfg.TailscaleAuthKey = "" // no key: log in with a link/QR
+	cfg.TailscaleAuthKey = "" // no key: setup only installs Tailscale
+
+	// Setup: install, but don't log in — and don't start a tailnet agent with
+	// no tailnet address to bind to.
 	ctx, log := runAll(t, cfg)
+	if strings.Contains(log, "tailscale up") || strings.Contains(log, "portainer/agent") {
+		t.Errorf("setup must leave the Tailscale login (and the agent) for later:\n%s", log)
+	}
+	if !strings.Contains(log, "install -y --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold tailscale") {
+		t.Error("Tailscale must still be installed")
+	}
+	if !ctx.AgentDeferred || !strings.Contains(strings.Join(ctx.Notes, "\n"), "sudo forge tailscale") {
+		t.Errorf("the summary must say how to log in later: %q", ctx.Notes)
+	}
+
+	// `forge tailscale`: interactive login, then the agent on the tailnet IP.
+	system.CommandLog = nil
+	st, ctx := TailscaleSteps(cfg)
+	for _, s := range st {
+		if s.Skip != nil && s.Skip(ctx) {
+			continue
+		}
+		if err := s.Run(ctx); err != nil {
+			t.Fatalf("step %q failed: %v", s.Name, err)
+		}
+	}
+	log = strings.Join(system.CommandLog, "\n")
 	if !strings.Contains(log, "tailscale up --ssh") || strings.Contains(log, "--auth-key") {
 		t.Errorf("expected an interactive `tailscale up --ssh` without a key:\n%s", log)
+	}
+	if !strings.Contains(log, "-p <tailnet-ip>:9001:9001") {
+		t.Errorf("the agent must start on the tailnet IP after login:\n%s", log)
 	}
 	if !strings.Contains(strings.Join(ctx.Notes, "\n"), "Disable key expiry") {
 		t.Error("browser-approved machines expire — the summary must say how to disable key expiry")
@@ -397,5 +425,53 @@ func TestTailscaleBrowserLogin(t *testing.T) {
 	a := system.CurrentAttention()
 	if a == nil || a.URL != "https://login.tailscale.com/a/1a2b3c4d5e6f" {
 		t.Fatalf("login URL not captured: %+v", a)
+	}
+}
+
+// TestGitHubDeviceCode: the code line gh prints (captured from gh 2.103 run
+// without a terminal) becomes an operator action with the code and the URL.
+func TestGitHubDeviceCode(t *testing.T) {
+	t.Cleanup(func() { system.SetAttention(nil) })
+	watchGitHubLogin("! Failed to copy one-time code to clipboard")
+	if system.CurrentAttention() != nil {
+		t.Fatal("no code yet — nothing to show")
+	}
+	watchGitHubLogin("! First copy your one-time code: 6830-73D2")
+	a := system.CurrentAttention()
+	if a == nil || a.Code != "6830-73D2" || a.URL != "https://github.com/login/device" {
+		t.Fatalf("device code not captured: %+v", a)
+	}
+}
+
+func TestDeployKeyNames(t *testing.T) {
+	a, b := deployKeyFor("/h/.ssh", "a/b-c"), deployKeyFor("/h/.ssh", "a-b/c")
+	if a.alias == b.alias || a.path == b.path {
+		t.Errorf("different repos must get different keys: %+v %+v", a, b)
+	}
+	if k := deployKeyFor("/h/.ssh", "Mxm-Bbv/App"); k.alias != "github-mxm-bbv--app" || k.path != "/h/.ssh/github-mxm-bbv--app" {
+		t.Errorf("unexpected naming: %+v", k)
+	}
+}
+
+// TestSSHDCryptoPolicy: weak algorithms are removed from OpenSSH's defaults
+// with "-" lists (valid on 8.9–10.x, verified with sshd -t on every supported
+// release) rather than replaced by a fixed list that would drop ML-KEM.
+func TestSSHDCryptoPolicy(t *testing.T) {
+	conf := renderSSHDDropIn(sshdOptions(testConfig()))
+	for _, want := range []string{
+		"KexAlgorithms -ecdh-sha2-nistp256,",
+		"MACs -umac-64-etm@openssh.com,",
+		"LogLevel VERBOSE",
+		"X11Forwarding no",
+		"AllowAgentForwarding no",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("drop-in lacks %q:\n%s", want, conf)
+		}
+	}
+	for _, risky := range []string{"MaxAuthTries", "AllowTcpForwarding", "Ciphers ", "HostKeyAlgorithms"} {
+		if strings.Contains(conf, risky) {
+			t.Errorf("%s locks out agents with several keys / VS Code / pinned host keys — leave the default", risky)
+		}
 	}
 }

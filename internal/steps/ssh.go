@@ -62,15 +62,8 @@ func sshKeysStep() Step {
 				}
 
 				// 3. known_hosts for github.com — verified against the pinned FP.
-				kh := sshDir + "/known_hosts"
-				if !system.FileContains(kh, "github.com") {
-					entry, err := verifiedGitHubHostKey()
-					if err != nil {
-						return err
-					}
-					if err := appendLine(kh, entry); err != nil {
-						return err
-					}
+				if err := ensureGitHubKnownHost(sshDir); err != nil {
+					return err
 				}
 
 				// 4. ~/.ssh/config entry for github.com.
@@ -91,6 +84,20 @@ func sshKeysStep() Step {
 			return nil
 		},
 	}
+}
+
+// ensureGitHubKnownHost pins github.com's host key in sshDir/known_hosts,
+// verified against the pinned fingerprint.
+func ensureGitHubKnownHost(sshDir string) error {
+	kh := sshDir + "/known_hosts"
+	if system.FileContains(kh, "github.com") {
+		return nil
+	}
+	entry, err := verifiedGitHubHostKey()
+	if err != nil {
+		return err
+	}
+	return appendLine(kh, entry)
 }
 
 // resolveAdminKey turns the configured source into a public key string.

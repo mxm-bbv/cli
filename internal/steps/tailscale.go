@@ -15,13 +15,15 @@ const (
 	tailscaleList    = "/etc/apt/sources.list.d/tailscale.list"
 )
 
-// tailscaleStep joins the box to the user's tailnet so admin surfaces
-// (Portainer Agent, emergency SSH) never have to be published to the internet.
+// tailscaleStep installs Tailscale, the private network that keeps admin
+// surfaces (Portainer Agent, emergency SSH) off the internet. Logging in is
+// left to the operator (`forge tailscale`, which sets c.TailscaleLogin) unless
+// an auth key makes it unattended.
 func tailscaleStep() Step {
 	return Step{
 		Name: "Tailscale: private network for admin access",
 		Skip: func(c *Context) bool {
-			return !c.Cfg.InstallPortainer || c.Cfg.PortainerAccess != config.PortainerTailnet
+			return !c.Cfg.InstallTailscale && !tailnetAgent(c.Cfg)
 		},
 		Run: func(c *Context) error {
 			if !system.CommandExists("tailscale") {
@@ -36,6 +38,10 @@ func tailscaleStep() Step {
 
 			loggedIn := tailscaleUp()
 			if !loggedIn {
+				if strings.TrimSpace(c.Cfg.TailscaleAuthKey) == "" && !c.TailscaleLogin {
+					c.Notes = append(c.Notes, "Tailscale is installed but not logged in. When you're ready:  sudo forge tailscale  (shows a QR code to scan)")
+					return nil
+				}
 				if err := joinTailnet(c); err != nil {
 					return err
 				}
@@ -53,7 +59,7 @@ func tailscaleStep() Step {
 				c.Notes = append(c.Notes, "Tailscale: disable key expiry for "+system.Hostname()+
 					" at https://login.tailscale.com/admin/machines (⋯ → Disable key expiry), otherwise it leaves the tailnet in ~180 days")
 			}
-			note := "Tailscale joined — tailnet IP " + ip
+			note := "Tailscale connected — tailnet IP " + ip
 			if c.Cfg.TailscaleSSH {
 				note += "; Tailscale SSH is on (emergency access from any tailnet device, e.g. your phone)"
 			}
@@ -61,6 +67,11 @@ func tailscaleStep() Step {
 			return nil
 		},
 	}
+}
+
+// tailnetAgent reports whether the Portainer Agent is to ride the tailnet.
+func tailnetAgent(cfg config.Config) bool {
+	return cfg.InstallPortainer && cfg.PortainerAccess == config.PortainerTailnet
 }
 
 // tailscaleLoginURLRe finds the login link `tailscale up` prints.

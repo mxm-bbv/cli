@@ -43,9 +43,13 @@ type Config struct {
 	AdminKeySource AdminKeySource `yaml:"admin_key_source"`
 	AdminKeyValue  string         `yaml:"admin_key_value"` // path, github user, or the key itself
 
-	// GitHub deploy key (clone private repos from the server)
-	GenerateGitHubKey bool   `yaml:"generate_github_key"`
-	GitHubKeyComment  string `yaml:"github_key_comment"`
+	// GitHub access for cloning private repos from the server. GitHubRepos
+	// get one read-only deploy key each, registered through the GitHub API.
+	// GenerateGitHubKey is the older manual path: one key the user pastes
+	// into GitHub themselves.
+	GitHubRepos       []string `yaml:"github_repos,omitempty"`
+	GenerateGitHubKey bool     `yaml:"generate_github_key"`
+	GitHubKeyComment  string   `yaml:"github_key_comment"`
 
 	// Base system tuning
 	Hostname string `yaml:"hostname"`
@@ -60,16 +64,21 @@ type Config struct {
 	// Optional feature toggles
 	EnableFirewall    bool `yaml:"enable_firewall"`     // UFW + fail2ban + DOCKER-USER
 	EnableAutoUpdates bool `yaml:"enable_auto_updates"` // unattended-upgrades
+	AutoReboot        bool `yaml:"auto_reboot"`         // …and reboot at 04:00 when an update needs it
 	EnableBaseTuning  bool `yaml:"enable_base_tuning"`  // hostname/tz/swap/utils
 	EnableLogRotation bool `yaml:"enable_log_rotation"` // docker daemon.json
+	HardenKernel      bool `yaml:"harden_kernel"`       // sysctl: redirects, source routing, BPF, kptr
 	InstallPortainer  bool `yaml:"install_portainer"`
 	InstallWatchtower bool `yaml:"install_watchtower"`
 
-	// Portainer Agent exposure (see PortainerAccess). TailscaleSSH additionally
-	// enables `tailscale up --ssh` so the box stays reachable from the tailnet
-	// (e.g. a phone) even if sshd or Portainer are down.
-	PortainerAccess PortainerAccess `yaml:"portainer_access"`
-	TailscaleSSH    bool            `yaml:"tailscale_ssh"`
+	// Tailscale is installed during setup; logging in is a separate, later
+	// step (`forge tailscale`) unless an auth key is supplied. TailscaleSSH
+	// adds `--ssh` at login, so the box stays reachable from the tailnet (e.g.
+	// a phone) even if sshd or Portainer are down. In tailnet mode the
+	// Portainer Agent waits for that login, since it binds to the tailnet IP.
+	InstallTailscale bool            `yaml:"install_tailscale"`
+	PortainerAccess  PortainerAccess `yaml:"portainer_access"`
+	TailscaleSSH     bool            `yaml:"tailscale_ssh"`
 
 	// Telegram alerts: a daily audit sweep, host-health thresholds, and SSH
 	// logins are pushed to a Telegram chat. The bot token is a secret and is
@@ -82,7 +91,7 @@ type Config struct {
 
 	// Runtime-only (not serialised)
 	DeployPassword   string `yaml:"-"`
-	TailscaleAuthKey string `yaml:"-"` // secret: prompted, never written to disk
+	TailscaleAuthKey string `yaml:"-"` // secret: from $TS_AUTHKEY, never written to disk
 	TelegramBotToken string `yaml:"-"` // secret: prompted, never written to disk
 }
 
@@ -91,7 +100,6 @@ func Default() Config {
 	return Config{
 		Username:          "deploy",
 		AdminKeySource:    AdminKeyPaste,
-		GenerateGitHubKey: true,
 		GitHubKeyComment:  "deploy@server",
 		Timezone:          "UTC",
 		SwapGB:            2,
@@ -100,10 +108,13 @@ func Default() Config {
 		DisablePassauth:   true,
 		EnableFirewall:    true,
 		EnableAutoUpdates: true,
+		AutoReboot:        true,
 		EnableBaseTuning:  true,
 		EnableLogRotation: true,
+		HardenKernel:      true,
 		InstallPortainer:  true,
 		InstallWatchtower: false,
+		InstallTailscale:  true,
 		PortainerAccess:   PortainerTailnet,
 		TailscaleSSH:      true,
 		EnableAlerts:      false,
@@ -217,6 +228,14 @@ func (c Config) Validate() error {
 		default:
 			return fmt.Errorf("portainer_access %q: must be tailnet or public", c.PortainerAccess)
 		}
+		if c.PortainerAccess == PortainerTailnet && !c.InstallTailscale {
+			return errors.New("portainer_access tailnet needs install_tailscale")
+		}
+	}
+	for _, r := range c.GitHubRepos {
+		if err := ValidGitHubRepo(r); err != nil {
+			return fmt.Errorf("github_repos %q: %w", r, err)
+		}
 	}
 	if c.EnableAlerts {
 		if c.AlertLoadPerCPU < 1 || c.AlertLoadPerCPU > 1000 {
@@ -230,6 +249,42 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// StatePath is where a provisioning run keeps its answers (secrets excluded),
+// so later commands — `forge tailscale`, `forge github` — act on the same
+// setup without asking again.
+const StatePath = "/etc/forge/config.yaml"
+
+var githubRepoRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+
+// ValidGitHubRepo checks an "owner/repo" name.
+func ValidGitHubRepo(s string) error {
+	if !githubRepoRe.MatchString(s) || strings.HasSuffix(s, ".git") || strings.Contains(s, "/.") {
+		return errors.New("must look like owner/repo")
+	}
+	return nil
+}
+
+// ParseGitHubRepos splits a comma/space separated list of owner/repo names,
+// accepting pasted GitHub URLs (https://github.com/o/r, git@github.com:o/r.git).
+func ParseGitHubRepos(s string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\t' }) {
+		f = strings.TrimSuffix(strings.TrimSuffix(f, "/"), ".git")
+		for _, p := range []string{"https://github.com/", "http://github.com/", "git@github.com:", "ssh://git@github.com/", "github.com/"} {
+			f = strings.TrimPrefix(f, p)
+		}
+		if err := ValidGitHubRepo(f); err != nil {
+			return nil, fmt.Errorf("%q: %w", f, err)
+		}
+		if k := strings.ToLower(f); !seen[k] {
+			seen[k] = true
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 // Save writes the Config to a YAML file. The deploy password is excluded by the

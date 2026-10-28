@@ -22,6 +22,7 @@ func TestDryRunAllSteps(t *testing.T) {
 	cfg.EnableAlerts = true
 	cfg.AlertsChatID = "123456"
 	cfg.TelegramBotToken = "123456789:TESTONLY_secret_token_value_abcdefgh"
+	cfg.GitHubRepos = []string{"mxm-bbv/app"}
 
 	st, ctx := BuildSteps(cfg)
 	for _, s := range st {
@@ -44,31 +45,41 @@ func TestDryRunAllSteps(t *testing.T) {
 		"useradd -m -s /bin/bash deploy",                          // deploy user
 		"usermod -aG sudo deploy",                                 // sudo group
 		"usermod -aG docker deploy",                               // docker group
-		"ssh-keygen -t ed25519",                                   // github key
-		"tailscale up --auth-key=<hidden> --ssh",                  // tailnet join (key redacted)
-		"<tailnet-ip>:9001:9001",                                  // agent bound to the tailnet, not 0.0.0.0
-		"-e AGENT_SECRET",                                         // agent pairing secret (value via env)
-		portainerAgentImage,                                       // portainer (pinned version)
-		watchtowerImage,                                           // watchtower (pinned version)
-		"--monitor-only",                                          // watchtower never auto-replaces containers
-		"no-new-privileges",                                       // containers hardened
-		"ufw allow 2222/tcp",                                      // firewall honours ssh port
-		"ufw allow in on tailscale0",                              // tailnet is a trusted admin interface
-		"ufw allow 22/tcp",                                        // current SSH port stays open until sshd moves
-		"jail.d/sshd.local",                                       // fail2ban jail
-		"fail2ban-client -t",                                      // jail validated before restart
-		"forge-docker-user.service",                               // DOCKER-USER rules (docker can't bypass UFW)
-		"forge-audit.timer",                                       // scheduled audit -> Telegram
-		"forge-health.timer",                                      // scheduled health checks
-		"alerts.env",                                              // secret alert config written
-		"20auto-upgrades",                                         // unattended-upgrades config
-		"sshd -t",                                                 // sshd validated before restart
-		"sshd -T (verify effective settings)",                     // effective config checked (drop-in overrides)
-		"systemctl restart ssh",                                   // sshd restarted last
-		"connect 127.0.0.1:2222, expect SSH banner",               // new port verified before closing the old one
-		"ufw delete allow 22/tcp",                                 // transitional SSH rule removed
-		"pam.d/sshd",                                              // SSH-login alerts via pam_exec
-		"ssh-login-notify.sh",                                     // login hook script
+		"ssh-keygen -q -t ed25519 -C deploy@",                     // one deploy key per repo
+		"-f /home/deploy/.ssh/github-mxm-bbv--app -N",             // …named after the repo
+		"append -> /home/deploy/.ssh/config",                      // ssh alias that selects the key
+		"url.git@github-mxm-bbv--app:mxm-bbv/app.git.insteadOf git@github.com:mxm-bbv/app.git", // plain clone URLs use it
+		"gh auth login --web (one-time code)",                                                  // device login, approved on a phone
+		"gh repo deploy-key add /home/deploy/.ssh/github-mxm-bbv--app.pub --repo mxm-bbv/app",  // read-only by default
+		"gh auth logout",                              // the login is thrown away
+		"tailscale up --auth-key=<hidden> --ssh",      // tailnet join (key redacted)
+		"<tailnet-ip>:9001:9001",                      // agent bound to the tailnet, not 0.0.0.0
+		"-e AGENT_SECRET",                             // agent pairing secret (value via env)
+		portainerAgentImage,                           // portainer (pinned version)
+		watchtowerImage,                               // watchtower (pinned version)
+		"--monitor-only",                              // watchtower never auto-replaces containers
+		"no-new-privileges",                           // containers hardened
+		"ufw allow 2222/tcp",                          // firewall honours ssh port
+		"ufw allow in on tailscale0",                  // tailnet is a trusted admin interface
+		"ufw allow 22/tcp",                            // current SSH port stays open until sshd moves
+		"jail.d/sshd.local",                           // fail2ban jail
+		"fail2ban-client -t",                          // jail validated before restart
+		"forge-docker-user.service",                   // DOCKER-USER rules (docker can't bypass UFW)
+		"forge-audit.timer",                           // scheduled audit -> Telegram
+		"forge-health.timer",                          // scheduled health checks
+		"alerts.env",                                  // secret alert config written
+		"20auto-upgrades",                             // unattended-upgrades config
+		"sysctl -q -e -p /etc/sysctl.d/90-forge.conf", // kernel & network hardening
+		"journald.conf.d/90-forge.conf",               // journal capped on a small disk
+		"apt.conf.d/52forge-auto-reboot",              // kernel fixes take effect
+		"needrestart/conf.d/90-forge.conf",            // outdated services restarted
+		"sshd -t",                                     // sshd validated before restart
+		"sshd -T (verify effective settings)",         // effective config checked (drop-in overrides)
+		"systemctl restart ssh",                       // sshd restarted last
+		"connect 127.0.0.1:2222, expect SSH banner",   // new port verified before closing the old one
+		"ufw delete allow 22/tcp",                     // transitional SSH rule removed
+		"pam.d/sshd",                                  // SSH-login alerts via pam_exec
+		"ssh-login-notify.sh",                         // login hook script
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
@@ -182,9 +193,11 @@ func TestSkipDisabledFeatures(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableFirewall = false
 	cfg.InstallPortainer = false
+	cfg.InstallTailscale = false
 	cfg.InstallWatchtower = false
 	cfg.EnableAutoUpdates = false
 	cfg.EnableAlerts = false
+	cfg.HardenKernel = false
 
 	st, ctx := BuildSteps(cfg)
 	skipped := map[string]bool{}
@@ -201,6 +214,8 @@ func TestSkipDisabledFeatures(t *testing.T) {
 		"Watchtower (monitor-only update checks)",
 		"Unattended security upgrades",
 		"Telegram alerts: daily audit, health & SSH-login pushes",
+		"Kernel & network hardening (sysctl)",
+		"GitHub: read-only deploy keys for your repos",
 	} {
 		if !skipped[name] {
 			t.Errorf("expected step %q to be skipped when its feature is disabled", name)

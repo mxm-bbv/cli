@@ -24,6 +24,10 @@ const (
 	// (identical for Ubuntu and Debian). Same fail-closed rule as Docker's key.
 	tailscaleGPGFingerprint = "2596A99EAAB33821893C0A79458CA832957F5868"
 
+	// GitHub CLI's apt signing key (https://cli.github.com/packages/githubcli-archive-keyring.gpg).
+	// The keyring also carries the previous key, expired since 2026-09-06.
+	githubCLIGPGFingerprint = "7F38BBB59D064DBCB3D84D725612B36462313325"
+
 	// ReleasePubKey is forge's own minisign public key. `forge update` verifies
 	// that a downloaded release's checksums.txt carries a valid signature from
 	// the matching private key before trusting (and installing) any binary.

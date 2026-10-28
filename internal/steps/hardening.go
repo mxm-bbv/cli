@@ -126,6 +126,21 @@ func sshdOptions(cfg config.Config) []sshdOption {
 		{"PubkeyAuthentication", "yes"},
 		{"KbdInteractiveAuthentication", "no"},
 		{"UsePAM", "yes"},
+		// Drop the weak entries from OpenSSH's defaults instead of listing
+		// algorithms: a "-" list is valid on every supported release (8.9 to
+		// 10.x) and keeps what newer ones add, e.g. ML-KEM key exchange.
+		{"KexAlgorithms", "-ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha256"},
+		{"MACs", "-umac-64-etm@openssh.com,umac-64@openssh.com,hmac-sha1-etm@openssh.com,hmac-sha1"},
+		{"LoginGraceTime", "30"},
+		// Logs the fingerprint of the key behind every login — after an
+		// incident, which key got in is the first question.
+		{"LogLevel", "VERBOSE"},
+		{"X11Forwarding", "no"},
+		// A forwarded agent lets root on this box use your laptop's keys for
+		// as long as you're logged in. Deploy keys cover git access instead.
+		{"AllowAgentForwarding", "no"},
+		{"ClientAliveInterval", "300"},
+		{"ClientAliveCountMax", "3"},
 	}
 	if cfg.DisableRootLogin {
 		opts = append(opts, sshdOption{"PermitRootLogin", "no"})
@@ -477,19 +492,40 @@ func sshServiceName() string {
 	return "ssh"
 }
 
+// autoRebootConf sorts after the distro's 50unattended-upgrades.
+const autoRebootConf = "/etc/apt/apt.conf.d/52forge-auto-reboot"
+
 func autoUpdatesStep() Step {
 	return Step{
 		Name: "Unattended security upgrades",
-		Skip: func(c *Context) bool {
-			return !c.Cfg.EnableAutoUpdates ||
-				system.FileExists("/etc/apt/apt.conf.d/20auto-upgrades")
-		},
+		Skip: func(c *Context) bool { return !c.Cfg.EnableAutoUpdates },
 		Run: func(c *Context) error {
-			if err := aptInstall("unattended-upgrades", "apt-listchanges"); err != nil {
+			// needrestart restarts services still running old libraries after
+			// an update (an openssl fix means nothing until they restart); in
+			// its default "list" mode unattended runs only print them.
+			if err := aptInstall("unattended-upgrades", "apt-listchanges", "needrestart"); err != nil {
 				return err
 			}
 			conf := "APT::Periodic::Update-Package-Lists \"1\";\nAPT::Periodic::Unattended-Upgrade \"1\";\n"
 			if err := system.WriteFile("/etc/apt/apt.conf.d/20auto-upgrades", conf, 0o644); err != nil {
+				return err
+			}
+			if _, err := system.Run("install", "-m", "0755", "-d", "/etc/needrestart/conf.d"); err != nil {
+				return err
+			}
+			if err := system.WriteFile("/etc/needrestart/conf.d/90-forge.conf", "# forge: restart outdated services automatically\n$nrconf{restart} = 'a';\n", 0o644); err != nil {
+				return err
+			}
+			// Kernel fixes only take effect after a reboot.
+			if c.Cfg.AutoReboot {
+				reboot := "// forge: reboot when an update requires it\n" +
+					"Unattended-Upgrade::Automatic-Reboot \"true\";\n" +
+					"Unattended-Upgrade::Automatic-Reboot-Time \"04:00\";\n"
+				if err := system.WriteFile(autoRebootConf, reboot, 0o644); err != nil {
+					return err
+				}
+				c.Notes = append(c.Notes, "Updates that need it reboot the server at 04:00 (server time) — give your containers a restart policy (restart: unless-stopped)")
+			} else if err := system.RemoveFile(autoRebootConf); err != nil {
 				return err
 			}
 			_, _ = system.Run("systemctl", "enable", "--now", "unattended-upgrades")
