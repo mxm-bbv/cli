@@ -35,7 +35,9 @@ type Step struct {
 // it together with the shared Context. SSH hardening is intentionally last so
 // the box stays reachable until everything else succeeded.
 func BuildSteps(cfg config.Config) ([]Step, *Context) {
-	c := &Context{Cfg: cfg}
+	// A tailnet-only agent needs the tailnet address, so its setup logs in to
+	// Tailscale on the spot (QR code) — the agent is up when setup ends.
+	c := &Context{Cfg: cfg, TailscaleLogin: tailnetAgent(cfg)}
 	steps := []Step{
 		preflightStep(),
 		baseStep(),

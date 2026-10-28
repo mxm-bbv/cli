@@ -292,6 +292,15 @@ func RemoveFile(path string) error {
 	return nil
 }
 
+// RemoveAll deletes a directory tree if it exists. Honours dry-run.
+func RemoveAll(path string) error {
+	CommandLog = append(CommandLog, "remove -r "+path)
+	if DryRun {
+		return nil
+	}
+	return os.RemoveAll(path)
+}
+
 // BackupFile copies path to path.bak if no backup exists yet.
 func BackupFile(path string) error {
 	bak := path + ".bak"

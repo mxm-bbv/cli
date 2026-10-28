@@ -94,8 +94,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 			title: "Tailscale",
 			fields: []huh.Field{
 				huh.NewNote().Description("A private network for admin access — Portainer and emergency SSH from your\n" +
-					"phone, invisible to the internet. forge only installs it; log in whenever\n" +
-					"you like:  sudo forge tailscale  (shows a QR code to scan)"),
+					"phone, invisible to the internet. With a Tailscale-only Portainer Agent you\n" +
+					"log in during setup (scan a QR code) and the agent starts on the tailnet right\n" +
+					"away; otherwise log in whenever you like:  sudo forge tailscale"),
 				huh.NewConfirm().Title("Install Tailscale?").Value(&cfg.InstallTailscale),
 			},
 		},

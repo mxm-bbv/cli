@@ -41,7 +41,16 @@ func githubStep() Step {
 	return Step{
 		Name: "GitHub: read-only deploy keys for your repos",
 		Skip: func(c *Context) bool { return len(c.Cfg.GitHubRepos) == 0 && c.Cfg.CaddyRepo == "" },
-		Run:  setupGitHubRepos,
+		Run: func(c *Context) error {
+			err := setupGitHubRepos(c)
+			if err != nil && len(c.Cfg.GitHubRepos) == 0 && c.Cfg.CaddyRepo != "" {
+				// Only the caddy repo was at stake: its step falls back to the
+				// built-in setup, so GitHub being unreachable isn't fatal.
+				c.Notes = append(c.Notes, "⚠ GitHub: "+firstLine(err.Error()))
+				return nil
+			}
+			return err
+		},
 	}
 }
 

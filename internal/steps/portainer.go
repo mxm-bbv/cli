@@ -24,6 +24,16 @@ func portainerStep() Step {
 					// Not logged in to Tailscale yet: there is no address to
 					// bind to, and 0.0.0.0 is not an option. `forge tailscale`
 					// starts the agent right after login.
+					// An agent from earlier (an older forge, by hand) may still
+					// sit on a public port: never leave one behind.
+					if containerExists("portainer_agent") {
+						if hostIP, _ := inspectAgent(); !IsTailnetIP(hostIP) {
+							if _, err := system.Run("docker", "rm", "-f", "portainer_agent"); err != nil {
+								return err
+							}
+							c.Notes = append(c.Notes, "Removed a Portainer Agent that wasn't bound to Tailscale")
+						}
+					}
 					c.AgentDeferred = true
 					c.Notes = append(c.Notes, "Portainer Agent starts right after Tailscale login (sudo forge tailscale) — it binds to the tailnet IP only")
 					return nil
