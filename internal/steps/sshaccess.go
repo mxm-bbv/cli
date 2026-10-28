@@ -142,13 +142,31 @@ func SetSSHTailnetOnly(on bool) error {
 	return nil
 }
 
-// SSHOpenToInternet reports whether UFW lets the internet reach sshd.
+// SSHOpenToInternet reports whether the internet can reach sshd.
 func SSHOpenToInternet() bool {
-	out, _ := system.Output("ufw", "status")
-	for _, p := range currentSSHPorts() {
-		for _, line := range strings.Split(out, "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 2 && (f[0] == strconv.Itoa(p) || f[0] == strconv.Itoa(p)+"/tcp") && f[1] == "ALLOW" {
+	out, err := system.Output("ufw", "status")
+	if err != nil {
+		return true // no firewall in the way
+	}
+	return sshOpenInUFW(out, currentSSHPorts())
+}
+
+// sshOpenInUFW reads `ufw status`: inactive means everything is open,
+// otherwise an ALLOW rule for an sshd port (or the OpenSSH profile) is.
+func sshOpenInUFW(status string, ports []int) bool {
+	if strings.TrimSpace(firstLineOf(status, nil)) != "Status: active" {
+		return true
+	}
+	for _, line := range strings.Split(status, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || f[1] != "ALLOW" {
+			continue
+		}
+		if f[0] == "OpenSSH" {
+			return true
+		}
+		for _, p := range ports {
+			if f[0] == strconv.Itoa(p) || f[0] == strconv.Itoa(p)+"/tcp" {
 				return true
 			}
 		}
