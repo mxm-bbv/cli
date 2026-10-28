@@ -62,7 +62,7 @@ func portainerStep() Step {
 			if bindIP == "" {
 				where = "PUBLIC — allowed through DOCKER-USER; consider tailnet mode instead"
 			}
-			c.Notes = append(c.Notes, "Portainer Agent ("+portainerAgentImage+") on "+publish+" ("+where+")")
+			c.Notes = append(c.Notes, "Portainer Agent ("+portainerAgentImage+") on "+bindIP+":9001 ("+where+")")
 			return nil
 		},
 	}

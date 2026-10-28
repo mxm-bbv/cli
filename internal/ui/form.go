@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
 	"github.com/mxm-bbv/cli/internal/config"
@@ -91,6 +92,8 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 					huh.NewOption("Public :9001 with AGENT_SECRET (NOT recommended)", "public"),
 					huh.NewOption("Don't install Portainer Agent", "off"),
 				).Value(&pmode),
+		),
+		huh.NewGroup(
 			huh.NewConfirm().Title("Install Watchtower (monitor-only update checks)?").Value(&cfg.InstallWatchtower),
 			huh.NewConfirm().Title("Enable firewall (UFW + fail2ban + DOCKER-USER container rules)?").Value(&cfg.EnableFirewall),
 			huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
@@ -135,8 +138,7 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		),
 	)
 
-	form := huh.NewForm(groups...).WithTheme(forgeTheme())
-	if err := form.Run(); err != nil {
+	if err := newForm(groups...).Run(); err != nil {
 		return cfg, err
 	}
 
@@ -155,9 +157,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 // secrets that are never serialised, like the Tailscale auth key).
 func AskSecret(title string) (string, error) {
 	v := ""
-	form := huh.NewForm(huh.NewGroup(
+	form := newForm(huh.NewGroup(
 		huh.NewInput().Title(title).EchoMode(huh.EchoModePassword).Value(&v),
-	)).WithTheme(forgeTheme())
+	))
 	if err := form.Run(); err != nil {
 		return "", err
 	}
@@ -168,7 +170,7 @@ func AskSecret(title string) (string, error) {
 // replay, where the rest of the answers come from a file).
 func AskPassword(username string) (string, error) {
 	pw, pw2 := "", ""
-	form := huh.NewForm(huh.NewGroup(
+	form := newForm(huh.NewGroup(
 		huh.NewInput().Title("Password for "+username).
 			EchoMode(huh.EchoModePassword).Value(&pw).Validate(nonEmpty("password")),
 		huh.NewInput().Title("Confirm password").
@@ -179,7 +181,7 @@ func AskPassword(username string) (string, error) {
 				}
 				return nil
 			}),
-	)).WithTheme(forgeTheme())
+	))
 	if err := form.Run(); err != nil {
 		return "", err
 	}
@@ -189,13 +191,32 @@ func AskPassword(username string) (string, error) {
 // Confirm shows a yes/no prompt with the given title.
 func Confirm(title string) (bool, error) {
 	ok := false
-	form := huh.NewForm(huh.NewGroup(
+	form := newForm(huh.NewGroup(
 		huh.NewConfirm().Title(title).Value(&ok),
-	)).WithTheme(forgeTheme())
+	))
 	if err := form.Run(); err != nil {
 		return false, err
 	}
 	return ok, nil
+}
+
+// newForm builds a themed form that fits the terminal. huh sizes every group
+// to the tallest one, capped at the terminal height, but its view is one line
+// taller than that (the blank line above the help) — so on a short terminal
+// the top line, the focused field's title, scrolls out of sight. Reporting a
+// terminal one line shorter keeps the whole view on screen.
+func newForm(groups ...*huh.Group) *huh.Form {
+	return huh.NewForm(groups...).
+		WithTheme(forgeTheme()).
+		WithProgramOptions(tea.WithFilter(fitHeight))
+}
+
+func fitHeight(_ tea.Model, msg tea.Msg) tea.Msg {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		ws.Height = max(ws.Height-1, 1)
+		return ws
+	}
+	return msg
 }
 
 func nonEmpty(field string) func(string) error {
