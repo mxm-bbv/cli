@@ -520,3 +520,22 @@ func TestSessionClient(t *testing.T) {
 		t.Fatalf("got %q (%v), want the shell's SSH client 100.64.1.2", out, err)
 	}
 }
+
+func TestSSHOpenInUFW(t *testing.T) {
+	const head = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n"
+	for _, tc := range []struct {
+		status string
+		open   bool
+	}{
+		{"", true}, // ufw not installed / no output
+		{"Status: inactive\n", true},
+		{head + "2222/tcp                   ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere\n", true},
+		{head + "OpenSSH                    ALLOW       Anywhere\n", true},
+		{head + "80/tcp                     ALLOW       Anywhere\nAnywhere on tailscale0     ALLOW       Anywhere\n", false},
+		{head + "22/tcp                     ALLOW       Anywhere\n", false}, // not sshd's port
+	} {
+		if got := sshOpenInUFW(tc.status, []int{2222}); got != tc.open {
+			t.Errorf("sshOpenInUFW(%q) = %v, want %v", tc.status, got, tc.open)
+		}
+	}
+}
