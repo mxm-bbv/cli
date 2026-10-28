@@ -70,6 +70,10 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `sudo forge ssh tailnet-only` | **Optional**: close SSH to the internet, so only Tailscale reaches it. Refuses unless you're connected over Tailscale right now and the node key never expires; `sudo forge ssh public` reopens it, `sudo forge ssh` shows the state |
 | `sudo forge tripwire --show` | What the tripwire watches right now (`--baseline` re-records it) |
 | `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |
+| `forge modules --json` | **Machine mode** (for deploy.me or any program over SSH): the catalog of modules — what each does, whether it changes access or waits for a person, its inputs |
+| `sudo forge run <module>` | Runs one module with its inputs as JSON on the first line of stdin (`{"inputs": {…}}`, so secrets never reach a command line); reports as `::forge::{json}` lines: steps, login links and codes to act on, the result |
+| `forge status --json` / `forge audit --json` | The same facts and checks as one JSON object |
+| `sudo forge machine enable [user]` | Lets the deploy user run the four commands above without a password (`/etc/sudoers.d/forge-machine`, checked with `visudo`); refuses unless the forge binary and its folder are root's alone. `disable` removes it |
 
 Every step is **idempotent** — re-running skips what's already done. SSH
 hardening always runs **last**, so the box stays reachable until everything

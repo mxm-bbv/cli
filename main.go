@@ -30,10 +30,22 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "audit":
+			if len(os.Args) > 2 && os.Args[2] == "--json" {
+				os.Exit(audit.RunJSON())
+			}
 			quiet := len(os.Args) > 2 && (os.Args[2] == "--quiet" || os.Args[2] == "-q")
 			os.Exit(audit.Run(quiet))
 		case "status":
+			if len(os.Args) > 2 && os.Args[2] == "--json" {
+				os.Exit(status.RunJSON(version))
+			}
 			os.Exit(status.Run())
+		case "modules":
+			os.Exit(runModules(os.Args[2:]))
+		case "run":
+			os.Exit(runModule(os.Args[2:]))
+		case "machine":
+			os.Exit(runMachineAccess(os.Args[2:]))
 		case "lint":
 			if len(os.Args) < 3 {
 				ui.Println(ui.StyleErr.Render("  usage: forge lint <docker-compose.yml>"))
@@ -258,4 +270,8 @@ const usage = `  forge                      set up a fresh server (wizard)
   sudo forge caddy [o/r]     install/update the Caddy web server
   sudo forge ssh [tailnet-only|public]
   sudo forge tripwire [--show|--baseline]
-  sudo forge audit | status | update [images] | lint <compose.yml>`
+  sudo forge audit | status | update [images] | lint <compose.yml>
+
+  For programs (deploy.me over ssh): forge modules --json, sudo forge run <module>
+  (inputs as JSON on stdin), status --json, audit --json; sudo forge machine enable
+  lets the deploy user run them without a password.`
