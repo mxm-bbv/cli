@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
 	"github.com/mxm-bbv/cli/internal/config"
@@ -27,150 +26,172 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		pmode = "off"
 	}
 
-	groups := []*huh.Group{
-		huh.NewGroup(
-			huh.NewNote().Title("Deploy user").
-				Description("A non-root user with sudo + docker access for day-to-day deploys."),
-			huh.NewInput().Title("Username").Value(&cfg.Username).
-				Validate(steps.ValidUsername),
-		),
-	}
-
+	pages := []page{{
+		title: "Deploy user",
+		fields: []huh.Field{
+			huh.NewNote().Description("A non-root user with sudo + docker access for day-to-day deploys."),
+			huh.NewInput().Title("Username").Value(&cfg.Username).Validate(steps.ValidUsername),
+		},
+	}}
 	if askPassword {
-		groups = append(groups, huh.NewGroup(
-			huh.NewInput().Title("Password for the deploy user").
-				EchoMode(huh.EchoModePassword).Value(&pw).
-				Validate(nonEmpty("password")),
-			huh.NewInput().Title("Confirm password").
-				EchoMode(huh.EchoModePassword).Value(&pw2).
-				Validate(func(s string) error {
-					if s != pw {
-						return errors.New("passwords do not match")
-					}
-					return nil
-				}),
-		))
+		pages = append(pages, page{
+			title: "Deploy user's password",
+			fields: []huh.Field{
+				huh.NewInput().Title("Password").
+					EchoMode(huh.EchoModePassword).Value(&pw).Validate(nonEmpty("password")),
+				huh.NewInput().Title("Confirm password").
+					EchoMode(huh.EchoModePassword).Value(&pw2).Validate(samePassword(&pw)),
+			},
+		})
 	}
 
-	groups = append(groups,
-		huh.NewGroup(
-			huh.NewNote().Title("Your SSH access").
-				Description("How should we install YOUR public key so you can log in as the deploy user?"),
-			huh.NewSelect[string]().Title("Admin key source").Value(&src).
-				Options(
-					huh.NewOption("Fetch from github.com/<user>.keys", string(config.AdminKeyGitHub)),
-					huh.NewOption("Paste the public key", string(config.AdminKeyPaste)),
-					huh.NewOption("Read from a local file path", string(config.AdminKeyFile)),
-					huh.NewOption("Skip (I'll set it up myself)", string(config.AdminKeySkip)),
-				),
-		),
-		huh.NewGroup(
-			huh.NewText().Title("Public key / file path / GitHub username").
-				Description("Paste the key, or a path, or a GitHub username — matching the choice above.").
-				Value(&cfg.AdminKeyValue),
-		).WithHideFunc(func() bool { return src == string(config.AdminKeySkip) }),
-
-		huh.NewGroup(
-			huh.NewNote().Title("GitHub").
-				Description("Private repos this server pulls from. forge creates a read-only deploy key\n"+
-					"for each and registers it through GitHub — you approve once with a code.\n"+
-					"Add more later:  sudo forge github owner/repo"),
-			huh.NewInput().Title("Repos (owner/repo, comma-separated — blank to skip)").Value(&repos).
-				Validate(func(s string) error {
-					_, err := config.ParseGitHubRepos(s)
-					return err
-				}),
-		),
-
-		huh.NewGroup(
-			huh.NewConfirm().Title("Apply base tuning (hostname, timezone, swap, utils)?").
-				Value(&cfg.EnableBaseTuning),
-			huh.NewInput().Title("Hostname (blank = leave as-is)").Value(&cfg.Hostname).
-				Validate(config.ValidHostname),
-			huh.NewInput().Title("Timezone").Value(&cfg.Timezone),
-			huh.NewInput().Title("Swap size in GB (0 = none)").Value(&swap).
-				Validate(intRange(0, 128)),
-		),
-
-		huh.NewGroup(
-			huh.NewNote().Title("Tailscale").
-				Description("A private network for admin access — Portainer and emergency SSH from your\n"+
-					"phone, invisible to the internet. forge only installs it; log in whenever\n"+
+	pages = append(pages,
+		page{
+			title: "Your SSH key",
+			fields: []huh.Field{
+				huh.NewNote().Description("How should forge install YOUR public key, so you can log in as the deploy user?"),
+				huh.NewSelect[string]().Title("Key source").Value(&src).
+					Options(
+						huh.NewOption("Fetch from github.com/<user>.keys", string(config.AdminKeyGitHub)),
+						huh.NewOption("Paste the public key", string(config.AdminKeyPaste)),
+						huh.NewOption("Read from a local file path", string(config.AdminKeyFile)),
+						huh.NewOption("Skip (I'll set it up myself)", string(config.AdminKeySkip)),
+					),
+			},
+		},
+		page{
+			title: "Your SSH key",
+			fields: []huh.Field{
+				huh.NewText().Title("Public key / file path / GitHub username").
+					Description("Matching the choice on the previous page.").
+					Value(&cfg.AdminKeyValue),
+			},
+			hide: func() bool { return src == string(config.AdminKeySkip) },
+		},
+		page{
+			title: "GitHub repos",
+			fields: []huh.Field{
+				huh.NewNote().Description("Private repos this server pulls from. Each gets its own read-only deploy key,\n" +
+					"registered through GitHub — you approve once with a code on your phone.\n" +
+					"More later:  sudo forge github owner/repo"),
+				huh.NewInput().Title("Repos (owner/repo, comma-separated — blank to skip)").Value(&repos).
+					Validate(func(s string) error {
+						_, err := config.ParseGitHubRepos(s)
+						return err
+					}),
+			},
+		},
+		page{
+			title: "Base system",
+			fields: []huh.Field{
+				huh.NewConfirm().Title("Apply base tuning (hostname, timezone, swap, utils)?").Value(&cfg.EnableBaseTuning),
+				huh.NewInput().Title("Hostname (blank = leave as-is)").Value(&cfg.Hostname).Validate(config.ValidHostname),
+				huh.NewInput().Title("Timezone").Value(&cfg.Timezone),
+				huh.NewInput().Title("Swap size in GB (0 = none)").Value(&swap).Validate(intRange(0, 128)),
+			},
+		},
+		page{
+			title: "Tailscale",
+			fields: []huh.Field{
+				huh.NewNote().Description("A private network for admin access — Portainer and emergency SSH from your\n" +
+					"phone, invisible to the internet. forge only installs it; log in whenever\n" +
 					"you like:  sudo forge tailscale  (shows a QR code to scan)"),
-			huh.NewConfirm().Title("Install Tailscale?").Value(&cfg.InstallTailscale),
-		),
-		huh.NewGroup(
-			huh.NewConfirm().Title("Enable Tailscale SSH at login (emergency access from your phone)?").
-				Value(&cfg.TailscaleSSH),
-		).WithHideFunc(func() bool { return !cfg.InstallTailscale }),
-
-		huh.NewGroup(
-			huh.NewConfirm().Title("Docker daemon hardening + log rotation (daemon.json)?").Value(&cfg.EnableLogRotation),
-			huh.NewSelect[string]().Title("Portainer Agent access").
-				Description("An agent is root-equivalent. Published on 0.0.0.0:9001 it WILL be found and abused.").
-				Options(
-					huh.NewOption("Tailscale only — invisible to the internet (recommended)", "tailnet"),
-					huh.NewOption("Public :9001 with AGENT_SECRET (NOT recommended)", "public"),
-					huh.NewOption("Don't install Portainer Agent", "off"),
-				).Value(&pmode).
-				Validate(func(v string) error {
-					if v == "tailnet" && !cfg.InstallTailscale {
-						return errors.New("needs Tailscale — go back (shift+tab) and install it, or pick another option")
-					}
-					return nil
-				}),
-		),
-		huh.NewGroup(
-			huh.NewNote().Title("Web server").
-				Description("Your Caddy setup as the server's web server on :80/:443: cloned from GitHub\n"+
-					"(a private repo gets a read-only deploy key) and started with docker compose.\n"+
+				huh.NewConfirm().Title("Install Tailscale?").Value(&cfg.InstallTailscale),
+			},
+		},
+		page{
+			title: "Tailscale",
+			fields: []huh.Field{
+				huh.NewConfirm().Title("Enable Tailscale SSH at login (emergency access from your phone)?").
+					Value(&cfg.TailscaleSSH),
+			},
+			hide: func() bool { return !cfg.InstallTailscale },
+		},
+		page{
+			title: "Docker & Portainer",
+			fields: []huh.Field{
+				huh.NewConfirm().Title("Docker daemon hardening + log rotation (daemon.json)?").Value(&cfg.EnableLogRotation),
+				huh.NewSelect[string]().Title("Portainer Agent access").
+					Description("An agent is root-equivalent. Published on 0.0.0.0:9001 it WILL be found and abused.").
+					Options(
+						huh.NewOption("Tailscale only — invisible to the internet (recommended)", "tailnet"),
+						huh.NewOption("Public :9001 with AGENT_SECRET (NOT recommended)", "public"),
+						huh.NewOption("Don't install Portainer Agent", "off"),
+					).Value(&pmode).
+					Validate(func(v string) error {
+						if v == "tailnet" && !cfg.InstallTailscale {
+							return errors.New("needs Tailscale — go back (shift+tab) and install it, or pick another option")
+						}
+						return nil
+					}),
+			},
+		},
+		page{
+			title: "Web server",
+			fields: []huh.Field{
+				huh.NewNote().Description("Your Caddy setup as the server's web server on :80/:443 — cloned from GitHub\n" +
+					"(a private repo gets a read-only deploy key), started with docker compose.\n" +
 					"Later:  sudo forge caddy"),
-			huh.NewConfirm().Title("Install your Caddy web server?").Value(&installCaddy),
-		),
-		huh.NewGroup(
-			huh.NewInput().Title("Caddy repo (owner/repo with a docker-compose.prod.yml)").Value(&caddyRepo).
-				Validate(config.ValidGitHubRepo),
-		).WithHideFunc(func() bool { return !installCaddy }),
-
-		huh.NewGroup(
-			huh.NewConfirm().Title("Install Watchtower (monitor-only update checks)?").Value(&cfg.InstallWatchtower),
-			huh.NewConfirm().Title("Enable firewall (UFW + fail2ban + DOCKER-USER container rules)?").Value(&cfg.EnableFirewall),
-			huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
-			huh.NewConfirm().Title("…and reboot at 04:00 when an update needs it (kernel fixes)?").Value(&cfg.AutoReboot),
-			huh.NewConfirm().Title("Kernel & network hardening (sysctl: no ICMP redirects, no unprivileged BPF…)?").
-				Value(&cfg.HardenKernel),
-		),
-
+				huh.NewConfirm().Title("Install your Caddy web server?").Value(&installCaddy),
+			},
+		},
+		page{
+			title: "Web server",
+			fields: []huh.Field{
+				huh.NewInput().Title("Caddy repo (owner/repo with a docker-compose.prod.yml)").Value(&caddyRepo).
+					Validate(config.ValidGitHubRepo),
+			},
+			hide: func() bool { return !installCaddy },
+		},
+		page{
+			title: "Maintenance & hardening",
+			fields: []huh.Field{
+				huh.NewConfirm().Title("Install Watchtower (monitor-only update checks)?").Value(&cfg.InstallWatchtower),
+				huh.NewConfirm().Title("Enable firewall (UFW + fail2ban + DOCKER-USER container rules)?").Value(&cfg.EnableFirewall),
+				huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
+				huh.NewConfirm().Title("…and reboot at 04:00 when an update needs it (kernel fixes)?").Value(&cfg.AutoReboot),
+				huh.NewConfirm().Title("Kernel & network hardening (sysctl: no ICMP redirects, no unprivileged BPF…)?").
+					Value(&cfg.HardenKernel),
+			},
+		},
 		// Telegram alerts — the detection half: know when the box is in trouble.
-		huh.NewGroup(
-			huh.NewConfirm().Title("Send Telegram alerts (daily audit, health, SSH logins)?").
-				Value(&cfg.EnableAlerts),
-		),
-		huh.NewGroup(
-			huh.NewNote().Title("Telegram").
-				Description("Create a bot with @BotFather, then get your chat ID from @userinfobot.\nThe bot token is a secret and is never written to your config file."),
-			huh.NewInput().Title("Bot token").
-				EchoMode(huh.EchoModePassword).Value(&cfg.TelegramBotToken).
-				Validate(config.ValidTelegramToken),
-			huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).
-				Validate(config.ValidTelegramChatID),
-			huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
-			huh.NewConfirm().Title("Tripwire: alert within a minute on what intruders change?").
-				Description("New SSH keys, users, sudo rights, open ports, services, cron jobs, SUID files…").
-				Value(&cfg.Tripwire),
-		).WithHideFunc(func() bool { return !cfg.EnableAlerts }),
-
+		page{
+			title: "Alerts",
+			fields: []huh.Field{
+				huh.NewConfirm().Title("Send Telegram alerts (daily audit, health, SSH logins, tripwire)?").
+					Value(&cfg.EnableAlerts),
+			},
+		},
+		page{
+			title: "Telegram",
+			fields: []huh.Field{
+				huh.NewNote().Description("Create a bot with @BotFather, then get your chat ID from @userinfobot.\n" +
+					"The bot token is a secret and is never written to your config file."),
+				huh.NewInput().Title("Bot token").
+					EchoMode(huh.EchoModePassword).Value(&cfg.TelegramBotToken).Validate(config.ValidTelegramToken),
+				huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).Validate(config.ValidTelegramChatID),
+				huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
+				huh.NewConfirm().Title("Tripwire: alert within a minute on what intruders change?").
+					Description("New SSH keys, users, sudo rights, open ports, services, cron jobs, SUID files…").
+					Value(&cfg.Tripwire),
+			},
+			hide: func() bool { return !cfg.EnableAlerts },
+		},
 		// SSH hardening — the dangerous bits, asked explicitly.
-		huh.NewGroup(
-			huh.NewNote().Title("⚠  SSH hardening").
-				Description("These run LAST. forge refuses to disable password auth unless a key is installed, and validates sshd -t before restart — so you can't lock yourself out.\n\nThis is the last page: submitting it starts the setup."),
-			huh.NewInput().Title("SSH port").Value(&port).Validate(intRange(1, 65535)),
-			huh.NewConfirm().Title("Disable root login over SSH?").Value(&cfg.DisableRootLogin),
-			huh.NewConfirm().Title("Disable password authentication (key-only)?").Value(&cfg.DisablePassauth),
-		),
+		page{
+			title: "⚠  SSH hardening",
+			fields: []huh.Field{
+				huh.NewNote().Description("These run LAST. forge refuses to disable password auth unless a key is installed,\n" +
+					"and validates sshd -t before restart — so you can't lock yourself out.\n\n" +
+					"This is the last page: submitting it starts the setup."),
+				huh.NewInput().Title("SSH port").Value(&port).Validate(intRange(1, 65535)),
+				huh.NewConfirm().Title("Disable root login over SSH?").Value(&cfg.DisableRootLogin),
+				huh.NewConfirm().Title("Disable password authentication (key-only)?").Value(&cfg.DisablePassauth),
+			},
+		},
 	)
 
-	if err := newForm(groups...).Run(); err != nil {
+	if err := runPages(pages...); err != nil {
 		return cfg, err
 	}
 
@@ -191,69 +212,45 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 }
 
 // AskSecret prompts for a single hidden value (used in --config replay for
-// secrets that are never serialised, like the Tailscale auth key).
+// secrets that are never serialised, like the Telegram bot token).
 func AskSecret(title string) (string, error) {
 	v := ""
-	form := newForm(huh.NewGroup(
+	err := runPages(page{title: title, fields: []huh.Field{
 		huh.NewInput().Title(title).EchoMode(huh.EchoModePassword).Value(&v),
-	))
-	if err := form.Run(); err != nil {
-		return "", err
-	}
-	return v, nil
+	}})
+	return v, err
 }
 
 // AskPassword prompts only for the deploy user's password (used in --config
 // replay, where the rest of the answers come from a file).
 func AskPassword(username string) (string, error) {
 	pw, pw2 := "", ""
-	form := newForm(huh.NewGroup(
-		huh.NewInput().Title("Password for "+username).
+	err := runPages(page{title: "Password for " + username, fields: []huh.Field{
+		huh.NewInput().Title("Password").
 			EchoMode(huh.EchoModePassword).Value(&pw).Validate(nonEmpty("password")),
 		huh.NewInput().Title("Confirm password").
-			EchoMode(huh.EchoModePassword).Value(&pw2).
-			Validate(func(s string) error {
-				if s != pw {
-					return errors.New("passwords do not match")
-				}
-				return nil
-			}),
-	))
-	if err := form.Run(); err != nil {
-		return "", err
-	}
-	return pw, nil
-}
-
-// newForm builds a themed form that fits the terminal. huh sizes every group
-// to the tallest one, capped at the terminal height, but its view is one line
-// taller than that (the blank line above the help) — so on a short terminal
-// the top line, the focused field's title, scrolls out of sight. Reporting a
-// terminal one line shorter keeps the whole view on screen.
-func newForm(groups ...*huh.Group) *huh.Form {
-	return huh.NewForm(groups...).
-		WithTheme(forgeTheme()).
-		WithProgramOptions(tea.WithFilter(fitHeight))
-}
-
-func fitHeight(_ tea.Model, msg tea.Msg) tea.Msg {
-	if ws, ok := msg.(tea.WindowSizeMsg); ok {
-		ws.Height = max(ws.Height-1, 1)
-		return ws
-	}
-	return msg
+			EchoMode(huh.EchoModePassword).Value(&pw2).Validate(samePassword(&pw)),
+	}})
+	return pw, err
 }
 
 // Confirm shows a yes/no prompt (default: no).
 func Confirm(title, description string) (bool, error) {
 	ok := false
-	form := newForm(huh.NewGroup(
-		huh.NewConfirm().Title(title).Description(description).Value(&ok),
-	))
-	if err := form.Run(); err != nil {
-		return false, err
+	err := runPages(page{title: title, fields: []huh.Field{
+		huh.NewNote().Description(description),
+		huh.NewConfirm().Title(title).Value(&ok),
+	}})
+	return ok, err
+}
+
+func samePassword(pw *string) func(string) error {
+	return func(s string) error {
+		if s != *pw {
+			return errors.New("passwords do not match")
+		}
+		return nil
 	}
-	return ok, nil
 }
 
 func nonEmpty(field string) func(string) error {

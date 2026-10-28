@@ -178,22 +178,42 @@ func (m RunnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// View draws on the alternate screen, for the reason the wizard does (see
+// wizard): the live view is redrawn many times a second, and only absolute
+// positioning lands it in the same place in every terminal. Recap leaves the
+// result in the scrollback afterwards.
 func (m RunnerModel) View() tea.View {
-	return tea.NewView(m.render())
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
 }
 
-// render lays the runner out for the current terminal size. Every line is cut
-// to the terminal width — a wrapped line would break the inline redraw.
+// Recap is the step list as plain lines, printed after the live view closes.
+func Recap(m RunnerModel) string {
+	var b strings.Builder
+	for _, s := range m.states {
+		if s.status == statusRunning {
+			s.status = statusErr // interrupted
+		}
+		b.WriteString("  " + m.stepLine(s) + "\n")
+	}
+	return b.String()
+}
+
+// render lays the runner out for the current terminal size: header, the step
+// list (finished steps fold into one line when it doesn't fit), the operator
+// action or failure panel. Every line is cut to the terminal width.
 func (m RunnerModel) render() string {
 	width := m.width
 	if width <= 0 {
 		width = 80
 	}
-	var lines []string
-	add := func(s ...string) {
+	split := func(s ...string) []string {
+		var out []string
 		for _, l := range s {
-			lines = append(lines, strings.Split(l, "\n")...)
+			out = append(out, strings.Split(l, "\n")...)
 		}
+		return out
 	}
 
 	finished := 0
@@ -203,44 +223,87 @@ func (m RunnerModel) render() string {
 		}
 	}
 	total := len(m.states)
-	add("", StyleTitle.Render("  Forging "+system.Hostname())+
-		StyleMuted.Render(fmt.Sprintf("  ·  %d/%d steps  ·  %s", finished, total, clock(time.Since(m.started)))))
-	add("  " + progressBar(finished, total, min(width-4, 48)))
-	add("")
+	lines := split("",
+		"  "+StyleTitle.Render("◆ "+Brand)+StyleMuted.Render("  ·  setting up "+system.Hostname()+
+			fmt.Sprintf("  ·  %d/%d  ·  %s", finished, total, clock(time.Since(m.started)))),
+		"  "+progressBar(finished, total, min(width-4, 60)),
+		"")
 
 	attn := system.CurrentAttention()
+	type block struct {
+		lines []string
+		done  bool
+	}
+	var blocks []block
 	for i, s := range m.states {
 		// While the operator has something to do, show only the step that is
 		// waiting so the action panel fits on small terminals.
 		if attn != nil && s.status != statusRunning {
 			continue
 		}
-		add("  " + m.stepLine(s))
+		b := block{lines: split("  " + m.stepLine(s)), done: s.status == statusOK || s.status == statusSkip}
 		if s.status == statusRunning && attn == nil {
 			if act := cleanLine(system.Activity()); act != "" {
-				add("       " + StyleMuted.Render(act))
+				b.lines = append(b.lines, "       "+StyleMuted.Render(act))
 			}
 		}
 		if m.paused && i == m.pausedAt {
-			add(m.failurePanel(s, width))
+			b.lines = append(b.lines, split(m.failurePanel(s, width))...)
 		}
+		blocks = append(blocks, b)
 	}
 
+	var tail []string
 	if attn != nil {
-		used := len(lines) + 1
-		add("", attentionPanel(attn, width, m.height-used))
+		used := len(lines) + 2
+		tail = append(tail, split("", attentionPanel(attn, width, m.height-used))...)
 		if left := total - finished - 1; left > 0 {
-			add(StyleMuted.Render(fmt.Sprintf("  … %d more steps after this one", left)))
+			tail = append(tail, StyleMuted.Render(fmt.Sprintf("  … %d more steps after this one", left)))
 		}
 	}
 	if m.quitArmed {
-		add("", StyleWarn.Render("  Press ctrl+c again to abort.")+
-			StyleMuted.Render(" The current step keeps running in the background and may leave the server half-configured."))
+		tail = append(tail, split("", StyleWarn.Render("  Press ctrl+c again to abort.")+
+			StyleMuted.Render(" The current step keeps running in the background and may leave the server half-configured."))...)
 	}
-	add("")
+
+	// Fit the step list: fold finished steps from the top, then drop
+	// not-yet-started ones from the bottom.
+	room := len(lines) + len(tail) + 1
+	if m.height > 0 {
+		room = m.height - room
+	} else {
+		room = 1 << 30
+	}
+	count := func() (n int) {
+		for _, b := range blocks {
+			n += len(b.lines)
+		}
+		return n
+	}
+	folded := 0
+	for count() > room && len(blocks) > 1 && blocks[0].done {
+		blocks, folded = blocks[1:], folded+1
+	}
+	if folded > 0 {
+		room-- // the fold line
+	}
+	hidden := 0
+	for count() > room && len(blocks) > 1 {
+		blocks, hidden = blocks[:len(blocks)-1], hidden+1
+	}
+	if folded > 0 {
+		lines = append(lines, "  "+StyleOK.Render(IconOK)+StyleMuted.Render(fmt.Sprintf("  %d steps done", folded)))
+	}
+	for _, b := range blocks {
+		lines = append(lines, b.lines...)
+	}
+	if hidden > 0 {
+		lines = append(lines, StyleMuted.Render(fmt.Sprintf("  … %d more", hidden)))
+	}
+	lines = append(lines, tail...)
 
 	for i, l := range lines {
-		lines[i] = ansi.Truncate(l, width, "…")
+		lines[i] = ansi.Truncate(l, width-1, "…")
 	}
 	return strings.Join(lines, "\n")
 }

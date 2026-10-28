@@ -26,6 +26,7 @@ func runSteps(st []steps.Step, ctx *steps.Context, logPath string) bool {
 		ui.Println(ui.StyleErr.Render("  runner error: " + err.Error()))
 		return false
 	}
+	ui.Println("\n" + ui.Recap(final.(ui.RunnerModel)))
 	if final.(ui.RunnerModel).Failed {
 		ui.Println(ui.StyleErr.Render("\n  Aborted with a failed step. Full log: " + logPath))
 		return false
