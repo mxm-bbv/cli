@@ -97,6 +97,10 @@ type Config struct {
 	// Runtime-only (not serialised)
 	DeployPassword   string `yaml:"-"`
 	TailscaleAuthKey string `yaml:"-"` // secret: from $TS_AUTHKEY, never written to disk
+	// AgentSecret is the Portainer Agent's AGENT_SECRET. A Portainer Server
+	// takes ONE secret (its own AGENT_SECRET env) for all its agents, so every
+	// server gets the same one. "" = keep this box's, or generate the first.
+	AgentSecret      string `yaml:"-"`
 	TelegramBotToken string `yaml:"-"` // secret: prompted, never written to disk
 }
 
@@ -272,6 +276,16 @@ const DefaultCaddyRepo = "MR-Studio-KZ-UA/caddy-core"
 const StatePath = "/etc/forge/config.yaml"
 
 var githubRepoRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
+
+var agentSecretRe = regexp.MustCompile(`^[A-Za-z0-9._~+/=-]{16,128}$`)
+
+// ValidAgentSecret accepts "" (generate/keep) or a 16+ character secret.
+func ValidAgentSecret(s string) error {
+	if s != "" && !agentSecretRe.MatchString(s) {
+		return errors.New("16–128 characters: letters, digits and ._~+/=-")
+	}
+	return nil
+}
 
 // ValidGitHubRepo checks an "owner/repo" name.
 func ValidGitHubRepo(s string) error {

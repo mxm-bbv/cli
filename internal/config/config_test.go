@@ -116,3 +116,11 @@ func TestTailnetNeedsTailscale(t *testing.T) {
 		t.Errorf("public agent without Tailscale is allowed: %v", err)
 	}
 }
+
+func TestValidAgentSecret(t *testing.T) {
+	for s, ok := range map[string]bool{"": true, "0123456789abcdef": true, "short": false, "has space in it 123": false, "q'uote0123456789": false} {
+		if (ValidAgentSecret(s) == nil) != ok {
+			t.Errorf("ValidAgentSecret(%q) ok=%v", s, !ok)
+		}
+	}
+}

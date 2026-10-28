@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mxm-bbv/cli/internal/audit"
 	"github.com/mxm-bbv/cli/internal/config"
@@ -43,6 +44,8 @@ func main() {
 			os.Exit(runCaddy(os.Args[2:]))
 		case "ssh":
 			os.Exit(runSSH(os.Args[2:]))
+		case "agent-secret":
+			os.Exit(runAgentSecret())
 		case "tripwire":
 			os.Exit(runTripwire(os.Args[2:]))
 		case "tailscale":
@@ -71,6 +74,12 @@ func main() {
 		showVer  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+	// A word forge doesn't know (a typo, or a command from a newer version)
+	// must never fall through to the full setup.
+	if flag.NArg() > 0 {
+		ui.Println(ui.StyleErr.Render("  unknown command: "+flag.Arg(0)) + "\n\n" + usage)
+		os.Exit(2)
+	}
 
 	if *showVer {
 		ui.Printf("forge %s\n", version)
@@ -115,6 +124,25 @@ func main() {
 		ui.Println(ui.StyleWarn.Render("  [dry-run] " + platErr.Error() + "\n"))
 	}
 
+	// The setup is for a fresh box. On one that already serves things and
+	// was never set up by forge, say what it would touch and ask first.
+	if *cfgPath == "" && !*dryRun {
+		if _, provisioned := loadState(); !provisioned {
+			if n := runningContainers(); n > 0 {
+				ok, err := ui.Confirm(fmt.Sprintf("This server already runs %d containers. Run the full setup on it?", n),
+					"The setup is meant for a fresh server: it changes SSH, the firewall, users and Docker's config.\n"+
+						"For an existing one you probably want a single command instead:\n"+
+						"  sudo forge agent-secret   Portainer Agent on Tailscale with your shared secret\n"+
+						"  sudo forge tailscale      log in to Tailscale\n"+
+						"  sudo forge audit          read-only security check")
+				if err != nil || !ok {
+					ui.Println(ui.StyleMuted.Render("  Nothing changed.") + "\n\n" + usage)
+					return
+				}
+			}
+		}
+	}
+
 	// Gather configuration: either replay a file or run the full wizard.
 	cfg, err := gatherConfig(*cfgPath)
 	if err != nil {
@@ -132,6 +160,9 @@ func main() {
 
 	// Unattended Tailscale login (CI, image builds): Tailscale's usual env var.
 	cfg.TailscaleAuthKey = os.Getenv("TS_AUTHKEY")
+	if s := os.Getenv("PORTAINER_AGENT_SECRET"); s != "" && cfg.AgentSecret == "" {
+		cfg.AgentSecret = s
+	}
 
 	// Keep the answers for `forge tailscale` / `forge github` later on.
 	if !*dryRun {
@@ -206,3 +237,21 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 	}
 	return cfg, cfg.Validate()
 }
+
+// runningContainers counts running Docker containers (0 without Docker).
+func runningContainers() int {
+	out, err := system.Output("docker", "ps", "-q")
+	if err != nil || out == "" {
+		return 0
+	}
+	return len(strings.Split(out, "\n"))
+}
+
+const usage = `  forge                      set up a fresh server (wizard)
+  sudo forge tailscale       log in to Tailscale, start the Portainer Agent on it
+  sudo forge agent-secret    switch the Portainer Agent to your shared AGENT_SECRET
+  sudo forge github o/r …    read-only deploy keys for GitHub repos
+  sudo forge caddy [o/r]     install/update the Caddy web server
+  sudo forge ssh [tailnet-only|public]
+  sudo forge tripwire [--show|--baseline]
+  sudo forge audit | status | update [images] | lint <compose.yml>`

@@ -17,6 +17,7 @@ type Context struct {
 	TailnetIP         string          // populated by the tailscale step
 	AgentSecret       string          // AGENT_SECRET for pairing the Portainer Agent (shown once)
 	AgentDeferred     bool            // tailnet agent waits for `forge tailscale`
+	AgentSecretNew    bool            // AgentSecret was generated here — the Portainer Server needs it
 	TailscaleLogin    bool            // log in to Tailscale now (browser/QR) instead of leaving it for later
 	GitHubRepos       []string        // repos whose deploy key works (ssh -T verified)
 	Notes             []string
@@ -35,7 +36,9 @@ type Step struct {
 // it together with the shared Context. SSH hardening is intentionally last so
 // the box stays reachable until everything else succeeded.
 func BuildSteps(cfg config.Config) ([]Step, *Context) {
-	c := &Context{Cfg: cfg}
+	// A tailnet-only agent needs the tailnet address, so its setup logs in to
+	// Tailscale on the spot (QR code) — the agent is up when setup ends.
+	c := &Context{Cfg: cfg, TailscaleLogin: tailnetAgent(cfg)}
 	steps := []Step{
 		preflightStep(),
 		baseStep(),

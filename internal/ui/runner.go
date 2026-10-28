@@ -503,10 +503,13 @@ func Report(title string, ctx *steps.Context, logPath string) string {
 
 // writeArtifacts appends the one-time values a run produced and its notes.
 func writeArtifacts(b *strings.Builder, ctx *steps.Context) {
-	if ctx.AgentSecret != "" {
-		b.WriteString("\n" + StyleTitle.Render("  Portainer AGENT_SECRET") +
-			StyleMuted.Render("  — enter it when adding this endpoint in Portainer (shown only once):") + "\n")
+	if ctx.AgentSecret != "" && ctx.AgentSecretNew {
+		b.WriteString("\n" + StyleTitle.Render("  Portainer AGENT_SECRET (new)") +
+			StyleMuted.Render("  — start your Portainer Server with  -e AGENT_SECRET=<this>  and give\n"+
+				"  the same one to forge on every next server (wizard, or  sudo forge agent-secret):") + "\n")
 		b.WriteString(StyleBox.Render(ctx.AgentSecret) + "\n")
+	} else if ctx.AgentSecret != "" {
+		b.WriteString("\n" + StyleMuted.Render("  Portainer Agent uses the shared AGENT_SECRET (the one your Portainer Server runs with).") + "\n")
 	}
 
 	if ctx.GitHubPubKey != "" {

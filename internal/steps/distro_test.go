@@ -380,22 +380,30 @@ func TestLegacySSHRCRemoval(t *testing.T) {
 func TestTailscaleBrowserLogin(t *testing.T) {
 	dryRunAs(t, ubuntuNoble, false)
 	cfg := testConfig()
-	cfg.TailscaleAuthKey = "" // no key: setup only installs Tailscale
+	cfg.TailscaleAuthKey = "" // no key: log in with a link/QR
 
-	// Setup: install, but don't log in — and don't start a tailnet agent with
-	// no tailnet address to bind to.
+	// Tailnet-only agent: setup logs in on the spot and the agent is up on
+	// the tailnet address when it ends.
 	ctx, log := runAll(t, cfg)
-	if strings.Contains(log, "tailscale up") || strings.Contains(log, "portainer/agent") {
-		t.Errorf("setup must leave the Tailscale login (and the agent) for later:\n%s", log)
+	if !strings.Contains(log, "tailscale up --ssh") || strings.Contains(log, "--auth-key") {
+		t.Errorf("expected an interactive `tailscale up --ssh` during setup:\n%s", log)
 	}
-	if !strings.Contains(log, "install -y --no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold tailscale") {
-		t.Error("Tailscale must still be installed")
+	if !strings.Contains(log, "-p <tailnet-ip>:9001:9001") || ctx.AgentDeferred {
+		t.Errorf("the agent must start on the tailnet IP during setup:\n%s", log)
 	}
-	if !ctx.AgentDeferred || !strings.Contains(strings.Join(ctx.Notes, "\n"), "sudo forge tailscale") {
-		t.Errorf("the summary must say how to log in later: %q", ctx.Notes)
+	if !strings.Contains(strings.Join(ctx.Notes, "\n"), "Disable key expiry") {
+		t.Error("browser-approved machines expire — the summary must say how to disable key expiry")
 	}
 
-	// `forge tailscale`: interactive login, then the agent on the tailnet IP.
+	// No agent: Tailscale is only installed, login is left for later.
+	system.CommandLog = nil
+	cfg.InstallPortainer = false
+	ctx, log = runAll(t, cfg)
+	if strings.Contains(log, "tailscale up") || !strings.Contains(strings.Join(ctx.Notes, "\n"), "sudo forge tailscale") {
+		t.Errorf("without a tailnet agent the login waits for `forge tailscale`:\n%s", log)
+	}
+
+	// `forge tailscale` later: interactive login.
 	system.CommandLog = nil
 	st, ctx := TailscaleSteps(cfg)
 	for _, s := range st {
@@ -406,15 +414,8 @@ func TestTailscaleBrowserLogin(t *testing.T) {
 			t.Fatalf("step %q failed: %v", s.Name, err)
 		}
 	}
-	log = strings.Join(system.CommandLog, "\n")
-	if !strings.Contains(log, "tailscale up --ssh") || strings.Contains(log, "--auth-key") {
-		t.Errorf("expected an interactive `tailscale up --ssh` without a key:\n%s", log)
-	}
-	if !strings.Contains(log, "-p <tailnet-ip>:9001:9001") {
-		t.Errorf("the agent must start on the tailnet IP after login:\n%s", log)
-	}
-	if !strings.Contains(strings.Join(ctx.Notes, "\n"), "Disable key expiry") {
-		t.Error("browser-approved machines expire — the summary must say how to disable key expiry")
+	if log = strings.Join(system.CommandLog, "\n"); !strings.Contains(log, "tailscale up --ssh") {
+		t.Errorf("forge tailscale must log in:\n%s", log)
 	}
 
 	// The link tailscale prints becomes an operator action with the URL.
@@ -537,5 +538,83 @@ func TestSSHOpenInUFW(t *testing.T) {
 		if got := sshOpenInUFW(tc.status, []int{2222}); got != tc.open {
 			t.Errorf("sshOpenInUFW(%q) = %v, want %v", tc.status, got, tc.open)
 		}
+	}
+}
+
+// TestDeployKeyCheckReadsStderr: GitHub's "successfully authenticated" comes
+// on stderr with exit status 1 — reading stdout only made every working key
+// look refused (v0.4.2).
+func TestDeployKeyCheckReadsStderr(t *testing.T) {
+	bin := t.TempDir()
+	fake := func(script string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(bin, "runuser"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	prev := system.DryRun
+	system.DryRun = false
+	t.Cleanup(func() { system.DryRun = prev })
+	k := deployKeyFor("/home/deploy/.ssh", "MR-Studio-KZ-UA/caddy-core")
+
+	fake(`echo "Hi MR-Studio-KZ-UA/caddy-core! You've successfully authenticated, but GitHub does not provide shell access." >&2; exit 1`)
+	if ok, out := deployKeyCheck("deploy", k); !ok {
+		t.Errorf("GitHub's greeting on stderr must count as success, got %q", out)
+	}
+	fake(`echo "git@github.com: Permission denied (publickey)." >&2; exit 255`)
+	if ok, out := deployKeyCheck("deploy", k); ok || !strings.Contains(out, "Permission denied") {
+		t.Errorf("a refused key must fail and say why, got %v %q", ok, out)
+	}
+}
+
+// TestCaddyFallsBackWithoutGitHub: when the clone fails, the built-in copy of
+// the caddy-core layout is written instead of failing the setup.
+func TestCaddyFallsBackWithoutGitHub(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	if err := writeBuiltinCaddy("deploy", "/home/deploy/caddy-core"); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	for _, want := range []string{
+		"write /home/deploy/caddy-core/docker-compose.prod.yml",
+		"write /home/deploy/caddy-core/core/prod/caddy/Caddyfile",
+		"write /home/deploy/caddy-core/.forge-builtin",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("missing %q:\n%s", want, log)
+		}
+	}
+	compose := builtinCaddyFiles["docker-compose.prod.yml"]
+	for _, want := range []string{"container_name: main-server", "proxy-network", "\"80:80\"", "\"443:443\"", "${PROJECTS_PATH}:/projects:ro"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("built-in compose must match caddy-core's layout: lacks %q", want)
+		}
+	}
+}
+
+// TestSharedAgentSecret: a Portainer Server has ONE AGENT_SECRET for all its
+// agents, so a given secret is used as-is (and kept for later runs); only
+// the first server generates one.
+func TestSharedAgentSecret(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	prev := agentEnvPath
+	agentEnvPath = filepath.Join(t.TempDir(), "agent.env")
+	t.Cleanup(func() { agentEnvPath = prev })
+
+	cfg := testConfig()
+	cfg.AgentSecret = "shared-secret-of-my-portainer"
+	ctx, log := runAll(t, cfg)
+	if ctx.AgentSecret != cfg.AgentSecret || ctx.AgentSecretNew {
+		t.Errorf("the given secret must be used, got %q (new=%v)", ctx.AgentSecret, ctx.AgentSecretNew)
+	}
+	if strings.Contains(log, cfg.AgentSecret) || !strings.Contains(log, "write "+agentEnvPath+" (600)") {
+		t.Errorf("the secret is kept root-only and never logged:\n%s", log)
+	}
+
+	system.CommandLog = nil
+	cfg.AgentSecret = ""
+	if ctx, _ = runAll(t, cfg); !ctx.AgentSecretNew || len(ctx.AgentSecret) != 32 {
+		t.Errorf("without one, the first server generates it: %q new=%v", ctx.AgentSecret, ctx.AgentSecretNew)
 	}
 }

@@ -27,12 +27,8 @@ func caddyStep() Step {
 			dir := caddyDir(cfg.HomeDir(), cfg.CaddyRepo)
 			compose := dir + "/docker-compose.prod.yml"
 
-			if !system.FileExists(dir + "/.git") {
-				if _, err := system.Run("runuser", "-u", user, "--", "git", "clone", "--quiet", caddyCloneURL(cfg.CaddyRepo), dir); err != nil {
-					return fmt.Errorf("clone %s: %w", cfg.CaddyRepo, err)
-				}
-			} else if _, err := system.Run("runuser", "-u", user, "--", "git", "-C", dir, "pull", "--ff-only", "--quiet"); err != nil {
-				c.Notes = append(c.Notes, "⚠ "+dir+" has local changes — not updated from git; the stack runs as it is")
+			if err := checkoutCaddy(c, dir); err != nil {
+				return err
 			}
 			if !system.DryRun && !system.FileExists(compose) {
 				return fmt.Errorf("%s has no docker-compose.prod.yml — is it the caddy repo?", cfg.CaddyRepo)
@@ -72,6 +68,111 @@ func caddyStep() Step {
 			return nil
 		},
 	}
+}
+
+// checkoutCaddy puts the caddy repo at dir: a fresh clone, a pull of an
+// existing one, or — when GitHub can't be reached or refuses the key — the
+// built-in copy of the same layout, so the box serves :80/:443 regardless.
+// A built-in copy is replaced by the real clone on the next run (`forge
+// caddy`), keeping the site configs added to it meanwhile.
+func checkoutCaddy(c *Context, dir string) error {
+	cfg := c.Cfg
+	user := cfg.Username
+	builtin := system.FileExists(dir + "/" + caddyBuiltinMarker)
+	switch {
+	case system.FileExists(dir + "/.git"):
+		if _, err := system.Run("runuser", "-u", user, "--", "git", "-C", dir, "pull", "--ff-only", "--quiet"); err != nil {
+			c.Notes = append(c.Notes, "⚠ "+dir+" has local changes or GitHub is unreachable — not updated; the stack runs as it is")
+		}
+		return nil
+	case system.FileExists(dir) && !builtin:
+		return fmt.Errorf("%s exists but is not a git checkout of %s — move it away first", dir, cfg.CaddyRepo)
+	}
+
+	clone := dir
+	if builtin {
+		clone = dir + ".clone"
+		_ = system.RemoveAll(clone)
+	}
+	if _, err := system.Run("runuser", "-u", user, "--", "git", "clone", "--quiet", caddyCloneURL(cfg.CaddyRepo), clone); err != nil {
+		if builtin {
+			c.Notes = append(c.Notes, "⚠ GitHub still unreachable for "+cfg.CaddyRepo+" — Caddy keeps running from the built-in setup")
+			return nil
+		}
+		c.Notes = append(c.Notes, "⚠ couldn't clone "+cfg.CaddyRepo+" (GitHub unreachable or the deploy key missing) — Caddy runs from forge's built-in copy of the same layout. Switch later:  sudo forge caddy")
+		return writeBuiltinCaddy(user, dir)
+	}
+	if builtin {
+		// Keep the sites added to the built-in copy, then swap it out.
+		_, _ = system.RunShell(fmt.Sprintf("cp -n %s/core/prod/caddy/configs/*.caddy %s/core/prod/caddy/configs/ 2>/dev/null; cp -n %s/.env %s/ 2>/dev/null; true", dir, clone, dir, clone))
+		_ = system.RemoveAll(dir + ".builtin-old")
+		if _, err := system.Run("mv", dir, dir+".builtin-old"); err != nil {
+			return err
+		}
+		if _, err := system.Run("mv", clone, dir); err != nil {
+			return err
+		}
+		c.Notes = append(c.Notes, "Caddy switched from the built-in setup to "+cfg.CaddyRepo+" (old copy: "+dir+".builtin-old)")
+	}
+	return nil
+}
+
+// caddyBuiltinMarker marks forge's built-in copy of the caddy layout.
+const caddyBuiltinMarker = ".forge-builtin"
+
+// The built-in copy mirrors caddy-core's prod layout: same image, container
+// name, network, mounts and configs/*.caddy import.
+var builtinCaddyFiles = map[string]string{
+	caddyBuiltinMarker: "forge's built-in Caddy setup; replaced by the git clone on `sudo forge caddy`\n",
+	"docker-compose.prod.yml": `networks:
+  proxy-network:
+    external: true
+
+volumes:
+  caddy-config:
+  caddy-data:
+
+services:
+  caddy:
+    image: caddy:2.11.4-alpine
+    container_name: main-server
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - CADDYPATH=/data
+    volumes:
+      - ./core/prod/caddy:/etc/caddy:ro
+      - caddy-data:/data:rw
+      - caddy-config:/config
+      - ${PROJECTS_PATH}:/projects:ro
+    networks:
+      - proxy-network
+`,
+	"core/prod/caddy/Caddyfile": `{
+    storage file_system {
+        root /data
+    }
+}
+
+import /etc/caddy/configs/*.caddy
+`,
+	"core/prod/caddy/configs/.gitkeep": "",
+}
+
+func writeBuiltinCaddy(user, dir string) error {
+	for name, body := range builtinCaddyFiles {
+		p := dir + "/" + name
+		if _, err := system.Run("install", "-d", "-o", user, "-g", user, p[:strings.LastIndex(p, "/")]); err != nil {
+			return err
+		}
+		if err := system.WriteFile(p, body, 0o644); err != nil {
+			return err
+		}
+	}
+	_, err := system.Run("chown", "-R", user+":"+user, dir)
+	return err
 }
 
 // caddyDir is where the repo is checked out: ~/<repo name>.
