@@ -234,6 +234,13 @@ func Output(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// CombinedOutput is Output with stderr included — for tools that answer on
+// stderr, like `ssh -T`. Read-only, like Output.
+func CombinedOutput(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 // CommandExists reports whether a binary is on PATH.
 func CommandExists(name string) bool {
 	_, err := exec.LookPath(name)

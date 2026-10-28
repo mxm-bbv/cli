@@ -539,3 +539,30 @@ func TestSSHOpenInUFW(t *testing.T) {
 		}
 	}
 }
+
+// TestDeployKeyCheckReadsStderr: GitHub's "successfully authenticated" comes
+// on stderr with exit status 1 — reading stdout only made every working key
+// look refused (v0.4.2).
+func TestDeployKeyCheckReadsStderr(t *testing.T) {
+	bin := t.TempDir()
+	fake := func(script string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(bin, "runuser"), []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	prev := system.DryRun
+	system.DryRun = false
+	t.Cleanup(func() { system.DryRun = prev })
+	k := deployKeyFor("/home/deploy/.ssh", "MR-Studio-KZ-UA/caddy-core")
+
+	fake(`echo "Hi MR-Studio-KZ-UA/caddy-core! You've successfully authenticated, but GitHub does not provide shell access." >&2; exit 1`)
+	if ok, out := deployKeyCheck("deploy", k); !ok {
+		t.Errorf("GitHub's greeting on stderr must count as success, got %q", out)
+	}
+	fake(`echo "git@github.com: Permission denied (publickey)." >&2; exit 255`)
+	if ok, out := deployKeyCheck("deploy", k); ok || !strings.Contains(out, "Permission denied") {
+		t.Errorf("a refused key must fail and say why, got %v %q", ok, out)
+	}
+}

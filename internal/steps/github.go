@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mxm-bbv/cli/internal/system"
 )
@@ -105,14 +106,20 @@ func setupGitHubRepos(c *Context) error {
 
 	var failed []string
 	for _, k := range keys {
-		if system.DryRun || deployKeyWorks(user, k) {
+		// A key GitHub has just accepted can take a few seconds to work.
+		ok, answer := deployKeyWorks(user, k), ""
+		for try := 0; !ok && !system.DryRun && len(pending) > 0 && try < 5; try++ {
+			time.Sleep(verifyPause)
+			ok, answer = deployKeyCheck(user, k)
+		}
+		if system.DryRun || ok {
 			c.GitHubRepos = append(c.GitHubRepos, k.repo)
 		} else {
-			failed = append(failed, k.repo)
+			failed = append(failed, k.repo+" ("+firstLineOf(answer, nil)+")")
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("GitHub still refuses the deploy key for %s — check the repo's Settings → Deploy keys", strings.Join(failed, ", "))
+		return fmt.Errorf("GitHub refuses the deploy key for %s — check the repo's Settings → Deploy keys", strings.Join(failed, ", "))
 	}
 	c.Notes = append(c.Notes, fmt.Sprintf("GitHub: read-only deploy keys for %s. Clone as %s the usual way, e.g.  git clone git@github.com:%s.git",
 		strings.Join(c.GitHubRepos, ", "), user, c.GitHubRepos[0]))
@@ -160,16 +167,25 @@ func prepareDeployKey(c *Context, k deployKey) error {
 	return nil
 }
 
-// deployKeyWorks asks GitHub whether k's key opens k's repo. GitHub answers
-// every key login with "Hi owner/repo! You've successfully authenticated…" and
-// exit status 1 (no shell), so the text is what counts.
+// verifyPause spaces out re-checks of a freshly added key.
+var verifyPause = 3 * time.Second
+
 func deployKeyWorks(user string, k deployKey) bool {
+	ok, _ := deployKeyCheck(user, k)
+	return ok
+}
+
+// deployKeyCheck asks GitHub whether k's key opens k's repo, and returns its
+// answer. GitHub greets every key login with "Hi owner/repo! You've
+// successfully authenticated…" on stderr and exit status 1 (no shell), so
+// the text is what counts.
+func deployKeyCheck(user string, k deployKey) (bool, string) {
 	if system.DryRun {
-		return false
+		return false, ""
 	}
-	out, _ := system.Output("runuser", "-u", user, "--",
+	out, _ := system.CombinedOutput("runuser", "-u", user, "--",
 		"ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "git@"+k.alias)
-	return strings.Contains(out, "successfully authenticated")
+	return strings.Contains(out, "successfully authenticated"), out
 }
 
 // registerDeployKeys logs in to the GitHub CLI with a one-time device code,
