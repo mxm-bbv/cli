@@ -374,3 +374,28 @@ func TestLegacySSHRCRemoval(t *testing.T) {
 		t.Error("bot token must not be passed to curl on the command line")
 	}
 }
+
+func TestTailscaleBrowserLogin(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	cfg := testConfig()
+	cfg.TailscaleAuthKey = "" // no key: log in with a link/QR
+	ctx, log := runAll(t, cfg)
+	if !strings.Contains(log, "tailscale up --ssh") || strings.Contains(log, "--auth-key") {
+		t.Errorf("expected an interactive `tailscale up --ssh` without a key:\n%s", log)
+	}
+	if !strings.Contains(strings.Join(ctx.Notes, "\n"), "Disable key expiry") {
+		t.Error("browser-approved machines expire — the summary must say how to disable key expiry")
+	}
+
+	// The link tailscale prints becomes an operator action with the URL.
+	t.Cleanup(func() { system.SetAttention(nil) })
+	watchTailscaleLogin("To authenticate, visit:")
+	if system.CurrentAttention() != nil {
+		t.Fatal("no URL yet — nothing to show")
+	}
+	watchTailscaleLogin("\thttps://login.tailscale.com/a/1a2b3c4d5e6f")
+	a := system.CurrentAttention()
+	if a == nil || a.URL != "https://login.tailscale.com/a/1a2b3c4d5e6f" {
+		t.Fatalf("login URL not captured: %+v", a)
+	}
+}

@@ -42,19 +42,19 @@ type finding struct {
 func Run(path string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  cannot read " + path + ": " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  cannot read " + path + ": " + err.Error()))
 		return 2
 	}
 	var cf composeFile
 	if err := yaml.Unmarshal(data, &cf); err != nil {
-		fmt.Println(ui.StyleErr.Render("  " + path + " is not valid YAML: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  " + path + " is not valid YAML: " + err.Error()))
 		return 2
 	}
 
-	fmt.Println(ui.StyleTitle.Render("  forge lint — " + path))
-	fmt.Println()
+	ui.Println(ui.StyleTitle.Render("  forge lint — " + path))
+	ui.Println()
 	if len(cf.Services) == 0 {
-		fmt.Println(ui.StyleWarn.Render("  no services found — is this a Compose file?"))
+		ui.Println(ui.StyleWarn.Render("  no services found — is this a Compose file?"))
 		return 1
 	}
 
@@ -64,7 +64,7 @@ func Run(path string) int {
 	}
 
 	if len(fs) == 0 {
-		fmt.Println(ui.StyleOK.Render("  ✓  no risky settings found"))
+		ui.Println(ui.StyleOK.Render("  ✓  no risky settings found"))
 		return 0
 	}
 
@@ -72,19 +72,19 @@ func Run(path string) int {
 	for _, f := range fs {
 		if f.crit {
 			crits++
-			fmt.Println("  " + ui.StyleErr.Render("✗") + "  " + ui.StyleKey.Render(f.svc) + ": " + ui.StyleErr.Render(f.msg))
+			ui.Println("  " + ui.StyleErr.Render("✗") + "  " + ui.StyleKey.Render(f.svc) + ": " + ui.StyleErr.Render(f.msg))
 		} else {
 			warns++
-			fmt.Println("  " + ui.StyleWarn.Render("⚠") + "  " + ui.StyleKey.Render(f.svc) + ": " + f.msg)
+			ui.Println("  " + ui.StyleWarn.Render("⚠") + "  " + ui.StyleKey.Render(f.svc) + ": " + f.msg)
 		}
 	}
-	fmt.Println()
+	ui.Println()
 	switch {
 	case crits > 0:
-		fmt.Println(ui.StyleErr.Render(fmt.Sprintf("  %d critical, %d warning(s) — fix before deploying.", crits, warns)))
+		ui.Println(ui.StyleErr.Render(fmt.Sprintf("  %d critical, %d warning(s) — fix before deploying.", crits, warns)))
 		return 2
 	default:
-		fmt.Println(ui.StyleWarn.Render(fmt.Sprintf("  %d warning(s) — review before deploying.", warns)))
+		ui.Println(ui.StyleWarn.Render(fmt.Sprintf("  %d warning(s) — review before deploying.", warns)))
 		return 1
 	}
 }

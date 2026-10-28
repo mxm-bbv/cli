@@ -27,21 +27,21 @@ const releaseBase = "https://github.com/mxm-bbv/cli/releases/latest/download"
 // Watchtower.
 func Images() int {
 	agent, wt := steps.PinnedImages()
-	fmt.Println(ui.StyleTitle.Render("  forge update images"))
-	fmt.Println(ui.StyleMuted.Render("  pinned: " + agent + ", " + wt))
-	fmt.Println()
+	ui.Println(ui.StyleTitle.Render("  forge update images"))
+	ui.Println(ui.StyleMuted.Render("  pinned: " + agent + ", " + wt))
+	ui.Println()
 
 	done, err := steps.UpdateImages()
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  update failed: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  update failed: " + err.Error()))
 		return 1
 	}
 	if len(done) == 0 {
-		fmt.Println(ui.StyleOK.Render("  ✓  containers already on the pinned images — nothing to do"))
+		ui.Println(ui.StyleOK.Render("  ✓  containers already on the pinned images — nothing to do"))
 		return 0
 	}
 	for _, d := range done {
-		fmt.Println("  " + ui.StyleOK.Render("✓") + "  recreated " + d)
+		ui.Println("  " + ui.StyleOK.Render("✓") + "  recreated " + d)
 	}
 	return 0
 }
@@ -51,12 +51,12 @@ func Images() int {
 // binary. allowUnsigned permits install when no signature is published yet
 // (transition only); the checksum is still enforced.
 func SelfUpdate(allowUnsigned bool) int {
-	fmt.Println(ui.StyleTitle.Render("  forge update"))
-	fmt.Println()
+	ui.Println(ui.StyleTitle.Render("  forge update"))
+	ui.Println()
 
 	self, err := os.Executable()
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  cannot locate the running binary: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  cannot locate the running binary: " + err.Error()))
 		return 1
 	}
 	if resolved, err := filepath.EvalSymlinks(self); err == nil {
@@ -65,20 +65,20 @@ func SelfUpdate(allowUnsigned bool) int {
 
 	arch := runtime.GOARCH
 	if arch != "amd64" && arch != "arm64" {
-		fmt.Println(ui.StyleErr.Render("  unsupported architecture: " + arch))
+		ui.Println(ui.StyleErr.Render("  unsupported architecture: " + arch))
 		return 1
 	}
 	asset := "forge-linux-" + arch
 
-	fmt.Println(ui.StyleMuted.Render("  fetching latest release…"))
+	ui.Println(ui.StyleMuted.Render("  fetching latest release…"))
 	binary, err := httpGet(releaseBase + "/" + asset)
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  download failed: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  download failed: " + err.Error()))
 		return 1
 	}
 	sums, err := httpGet(releaseBase + "/checksums.txt")
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  could not fetch checksums.txt: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  could not fetch checksums.txt: " + err.Error()))
 		return 1
 	}
 
@@ -87,60 +87,60 @@ func SelfUpdate(allowUnsigned bool) int {
 	switch {
 	case sigErr == nil:
 		if err := verifyMinisign(steps.ReleasePubKey, sig, sums); err != nil {
-			fmt.Println(ui.StyleErr.Render("  " + err.Error()))
+			ui.Println(ui.StyleErr.Render("  " + err.Error()))
 			return 1
 		}
-		fmt.Println("  " + ui.StyleOK.Render("✓") + "  release signature verified (minisign)")
+		ui.Println("  " + ui.StyleOK.Render("✓") + "  release signature verified (minisign)")
 	case allowUnsigned:
-		fmt.Println("  " + ui.StyleWarn.Render("⚠") + "  no signature published — proceeding on checksum only (--allow-unsigned)")
+		ui.Println("  " + ui.StyleWarn.Render("⚠") + "  no signature published — proceeding on checksum only (--allow-unsigned)")
 	default:
-		fmt.Println(ui.StyleErr.Render("  checksums.txt.minisig not found — refusing to update unsigned."))
-		fmt.Println(ui.StyleErr.Render("  Re-run with --allow-unsigned to trust the checksum alone."))
+		ui.Println(ui.StyleErr.Render("  checksums.txt.minisig not found — refusing to update unsigned."))
+		ui.Println(ui.StyleErr.Render("  Re-run with --allow-unsigned to trust the checksum alone."))
 		return 1
 	}
 
 	// 2. SHA256 of the binary against the (now-trusted) checksums list.
 	want := checksumFor(sums, asset)
 	if want == "" {
-		fmt.Println(ui.StyleErr.Render("  no checksum for " + asset + " in checksums.txt — aborting"))
+		ui.Println(ui.StyleErr.Render("  no checksum for " + asset + " in checksums.txt — aborting"))
 		return 1
 	}
 	got := fmt.Sprintf("%x", sha256.Sum256(binary))
 	if !strings.EqualFold(want, got) {
-		fmt.Println(ui.StyleErr.Render("  checksum MISMATCH — aborting"))
-		fmt.Println(ui.StyleMuted.Render("    expected: " + want))
-		fmt.Println(ui.StyleMuted.Render("    actual:   " + got))
+		ui.Println(ui.StyleErr.Render("  checksum MISMATCH — aborting"))
+		ui.Println(ui.StyleMuted.Render("    expected: " + want))
+		ui.Println(ui.StyleMuted.Render("    actual:   " + got))
 		return 1
 	}
-	fmt.Println("  " + ui.StyleOK.Render("✓") + "  checksum verified (sha256:" + got[:16] + "…)")
+	ui.Println("  " + ui.StyleOK.Render("✓") + "  checksum verified (sha256:" + got[:16] + "…)")
 
 	// 3. Atomic replace: write next to the target (same filesystem), then rename.
 	dir := filepath.Dir(self)
 	tmp, err := os.CreateTemp(dir, ".forge-update-*")
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  cannot write to " + dir + " (need root?): " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  cannot write to " + dir + " (need root?): " + err.Error()))
 		return 1
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op after a successful rename
 	if _, err := tmp.Write(binary); err != nil {
 		tmp.Close()
-		fmt.Println(ui.StyleErr.Render("  write failed: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  write failed: " + err.Error()))
 		return 1
 	}
 	tmp.Close()
 	if err := os.Chmod(tmpName, 0o755); err != nil {
-		fmt.Println(ui.StyleErr.Render("  chmod failed: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  chmod failed: " + err.Error()))
 		return 1
 	}
 	if err := os.Rename(tmpName, self); err != nil {
-		fmt.Println(ui.StyleErr.Render("  could not replace " + self + ": " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  could not replace " + self + ": " + err.Error()))
 		return 1
 	}
 
-	fmt.Println("  " + ui.StyleOK.Render("✓") + "  installed to " + self)
+	ui.Println("  " + ui.StyleOK.Render("✓") + "  installed to " + self)
 	if out, err := osexec.Command(self, "--version").Output(); err == nil {
-		fmt.Println(ui.StyleMuted.Render("  now: " + strings.TrimSpace(string(out))))
+		ui.Println(ui.StyleMuted.Render("  now: " + strings.TrimSpace(string(out))))
 	}
 	return 0
 }

@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/mxm-bbv/cli/internal/audit"
 	"github.com/mxm-bbv/cli/internal/config"
@@ -36,7 +36,7 @@ func main() {
 			os.Exit(status.Run())
 		case "lint":
 			if len(os.Args) < 3 {
-				fmt.Println(ui.StyleErr.Render("  usage: forge lint <docker-compose.yml>"))
+				ui.Println(ui.StyleErr.Render("  usage: forge lint <docker-compose.yml>"))
 				os.Exit(2)
 			}
 			os.Exit(lint.Run(os.Args[2]))
@@ -64,7 +64,7 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Printf("forge %s\n", version)
+		ui.Printf("forge %s\n", version)
 		return
 	}
 
@@ -74,57 +74,57 @@ func main() {
 	// failed run can be diagnosed after the fact.
 	logPath := openLog(*dryRun)
 
-	fmt.Print(ui.Banner(version))
+	ui.Print(ui.Banner(version))
 
 	// Privilege & OS checks — before the wizard, so nobody fills it in on a
 	// box forge can't provision.
 	plat, platErr := system.DetectPlatform(system.ReadOSRelease())
 	if !*dryRun {
 		if !system.IsRoot() {
-			fmt.Println(ui.StyleErr.Render("  This must run as root. Try:  sudo forge"))
+			ui.Println(ui.StyleErr.Render("  This must run as root. Try:  sudo forge"))
 			os.Exit(1)
 		}
 		if platErr != nil {
-			fmt.Println(ui.StyleErr.Render("  " + platErr.Error()))
+			ui.Println(ui.StyleErr.Render("  " + platErr.Error()))
 			os.Exit(1)
 		}
 		if !system.HasSystemd() {
-			fmt.Println(ui.StyleErr.Render("  systemd is not running — forge needs it to manage services, timers and sshd."))
+			ui.Println(ui.StyleErr.Render("  systemd is not running — forge needs it to manage services, timers and sshd."))
 			os.Exit(1)
 		}
 	} else if !system.IsRoot() {
-		fmt.Println(ui.StyleWarn.Render("  [dry-run] not root — that's fine, nothing will be executed.\n"))
+		ui.Println(ui.StyleWarn.Render("  [dry-run] not root — that's fine, nothing will be executed.\n"))
 	}
 	if platErr == nil {
-		fmt.Println(ui.StyleMuted.Render("  Detected: " + plat.String()))
+		ui.Println(ui.StyleMuted.Render("  Detected: " + plat.String()))
 		if note := plat.SupportNote(); note != "" {
-			fmt.Println(ui.StyleWarn.Render("  ⚠ " + note))
+			ui.Println(ui.StyleWarn.Render("  ⚠ " + note))
 		}
-		fmt.Println()
+		ui.Println()
 	} else {
-		fmt.Println(ui.StyleWarn.Render("  [dry-run] " + platErr.Error() + "\n"))
+		ui.Println(ui.StyleWarn.Render("  [dry-run] " + platErr.Error() + "\n"))
 	}
 
 	// Gather configuration: either replay a file or run the full wizard.
 	cfg, err := gatherConfig(*cfgPath)
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  " + err.Error()))
 		os.Exit(1)
 	}
 
 	if *savePath != "" {
 		if err := config.Save(cfg, *savePath); err != nil {
-			fmt.Println(ui.StyleErr.Render("  could not save config: " + err.Error()))
+			ui.Println(ui.StyleErr.Render("  could not save config: " + err.Error()))
 			os.Exit(1)
 		}
-		fmt.Println(ui.StyleOK.Render("  Saved answers to " + *savePath + " (password excluded)\n"))
+		ui.Println(ui.StyleOK.Render("  Saved answers to " + *savePath + " (password excluded)\n"))
 	}
 
 	// Final confirmation.
 	if !*assumeYes {
 		ok, err := ui.Confirm(confirmTitle(cfg, *dryRun))
 		if err != nil || !ok {
-			fmt.Println(ui.StyleMuted.Render("  Aborted."))
+			ui.Println(ui.StyleMuted.Render("  Aborted."))
 			return
 		}
 	}
@@ -135,20 +135,20 @@ func main() {
 	prog := tea.NewProgram(model)
 	final, err := prog.Run()
 	if err != nil {
-		fmt.Println(ui.StyleErr.Render("  runner error: " + err.Error()))
+		ui.Println(ui.StyleErr.Render("  runner error: " + err.Error()))
 		os.Exit(1)
 	}
 
 	rm := final.(ui.RunnerModel)
 	if rm.Failed {
-		fmt.Println(ui.StyleErr.Render("\n  Aborted with a failed step. Full log: " + logPath))
+		ui.Println(ui.StyleErr.Render("\n  Aborted with a failed step. Full log: " + logPath))
 		os.Exit(1)
 	}
 
-	fmt.Println("\n" + ui.Summary(ctx, *dryRun, logPath))
+	ui.Println("\n" + ui.Summary(ctx, *dryRun, logPath))
 
 	if *dryRun {
-		fmt.Println(ui.StyleMuted.Render(fmt.Sprintf("  [dry-run] %d commands would have run.", len(system.CommandLog))))
+		ui.Println(ui.StyleMuted.Render(fmt.Sprintf("  [dry-run] %d commands would have run.", len(system.CommandLog))))
 	}
 }
 
@@ -186,7 +186,7 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 		cfg.DeployPassword = pw
 		// Secrets are never serialised — the tailnet auth key is re-prompted.
 		if cfg.InstallPortainer && cfg.PortainerAccess == config.PortainerTailnet {
-			key, err := ui.AskSecret("Tailscale auth key (empty if this box already joined)")
+			key, err := ui.AskSecret("Tailscale auth key (optional — leave empty to log in with a link/QR code)")
 			if err != nil {
 				return cfg, err
 			}

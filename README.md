@@ -36,7 +36,7 @@ hostname overrides, snap-packaged Docker, and LXC/OpenVZ containers (no swap).
 |-------------|---------|
 | **Docker**  | Docker Engine + Compose V2 + Buildx from the official apt repo |
 | **Daemon**  | `daemon.json`: json-file log rotation (10m × 3), `no-new-privileges` for every container, `live-restore` |
-| **Tailscale** | Joins your tailnet (fingerprint-verified apt repo) so admin surfaces never face the internet; optional Tailscale SSH for emergency phone access |
+| **Tailscale** | Joins your tailnet (fingerprint-verified apt repo) — **sign in by scanning a QR code** with your phone, no auth key needed (keys are optional, for unattended runs); optional Tailscale SSH for emergency phone access |
 | **Portainer** | Portainer Agent bound to the **tailnet IP only** + `AGENT_SECRET` (public `0.0.0.0:9001` is a known root-compromise vector; a discouraged public+secret mode exists) |
 | **Watchtower** | **Monitor-only** update checks — never auto-replaces containers (optional; maintained `nickfedor/watchtower` fork) |
 | **User**    | Creates `deploy` with a password you set, in the `sudo` and `docker` groups |

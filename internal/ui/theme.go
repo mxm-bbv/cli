@@ -1,7 +1,7 @@
 // Package ui renders the wizard, banner and execution runner.
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // Palette — a warm "forge" theme: ember orange, steel, ash.
 var (
@@ -32,6 +32,11 @@ var (
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(ColorGold).
 			Padding(0, 2)
+
+	StyleErrBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(ColorErr).
+			Padding(0, 1)
 )
 
 // Icons used in the runner output.
@@ -41,3 +46,11 @@ const (
 	IconSkip    = "○"
 	IconRunning = "▶"
 )
+
+// Println, Printf and Print write to stdout like fmt, but downsample colors to
+// what the terminal supports — and strip them entirely when stdout is a pipe
+// or file (lipgloss v2 styles always render full color; this is where it is
+// adapted to the output).
+func Println(v ...any)               { _, _ = lipgloss.Println(v...) }
+func Printf(format string, v ...any) { _, _ = lipgloss.Printf(format, v...) }
+func Print(v ...any)                 { _, _ = lipgloss.Print(v...) }

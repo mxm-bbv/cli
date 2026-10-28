@@ -38,24 +38,24 @@ func (r *report) line(sev severity, msg string) {
 		switch sev {
 		case sevWarn:
 			r.warns++
-			fmt.Println("⚠ " + msg)
+			ui.Println("⚠ " + msg)
 		case sevCrit:
 			r.crits++
-			fmt.Println("✗ " + msg)
+			ui.Println("✗ " + msg)
 		}
 		return
 	}
 	switch sev {
 	case sevOK:
-		fmt.Println("  " + ui.StyleOK.Render("✓") + "  " + msg)
+		ui.Println("  " + ui.StyleOK.Render("✓") + "  " + msg)
 	case sevInfo:
-		fmt.Println("  " + ui.StyleMuted.Render("·") + "  " + ui.StyleMuted.Render(msg))
+		ui.Println("  " + ui.StyleMuted.Render("·") + "  " + ui.StyleMuted.Render(msg))
 	case sevWarn:
 		r.warns++
-		fmt.Println("  " + ui.StyleWarn.Render("⚠") + "  " + msg)
+		ui.Println("  " + ui.StyleWarn.Render("⚠") + "  " + msg)
 	case sevCrit:
 		r.crits++
-		fmt.Println("  " + ui.StyleErr.Render("✗") + "  " + ui.StyleErr.Render(msg))
+		ui.Println("  " + ui.StyleErr.Render("✗") + "  " + ui.StyleErr.Render(msg))
 	}
 }
 
@@ -64,10 +64,10 @@ func (r *report) line(sev severity, msg string) {
 // the findings (no colour, no OK lines) for machine/Telegram consumption.
 func Run(quiet bool) int {
 	if !quiet {
-		fmt.Println(ui.StyleTitle.Render("  forge audit — host compromise & exposure check"))
-		fmt.Println()
+		ui.Println(ui.StyleTitle.Render("  forge audit — host compromise & exposure check"))
+		ui.Println()
 		if os.Geteuid() != 0 {
-			fmt.Println(ui.StyleWarn.Render("  Not running as root — some checks (docker, iptables, cron) may be incomplete.\n"))
+			ui.Println(ui.StyleWarn.Render("  Not running as root — some checks (docker, iptables, cron) may be incomplete.\n"))
 		}
 	}
 
@@ -91,24 +91,24 @@ func Run(quiet bool) int {
 		}
 	}
 
-	fmt.Println()
+	ui.Println()
 	switch {
 	case r.crits > 0:
-		fmt.Println(ui.StyleErr.Render(fmt.Sprintf("  %d critical finding(s), %d warning(s).", r.crits, r.warns)))
+		ui.Println(ui.StyleErr.Render(fmt.Sprintf("  %d critical finding(s), %d warning(s).", r.crits, r.warns)))
 		if r.compromised {
-			fmt.Println(ui.StyleErr.Render("  Malware indicators found — treat this as an active compromise: snapshot"))
-			fmt.Println(ui.StyleErr.Render("  for evidence, isolate the host and plan a clean reinstall — do not just"))
-			fmt.Println(ui.StyleErr.Render("  delete the files."))
+			ui.Println(ui.StyleErr.Render("  Malware indicators found — treat this as an active compromise: snapshot"))
+			ui.Println(ui.StyleErr.Render("  for evidence, isolate the host and plan a clean reinstall — do not just"))
+			ui.Println(ui.StyleErr.Render("  delete the files."))
 		} else {
-			fmt.Println(ui.StyleErr.Render("  Critical exposure — an attacker who finds it gains root-equivalent access."))
-			fmt.Println(ui.StyleErr.Render("  Fix it now (rerunning forge fixes its own components; compose files are yours)."))
+			ui.Println(ui.StyleErr.Render("  Critical exposure — an attacker who finds it gains root-equivalent access."))
+			ui.Println(ui.StyleErr.Render("  Fix it now (rerunning forge fixes its own components; compose files are yours)."))
 		}
 		return 2
 	case r.warns > 0:
-		fmt.Println(ui.StyleWarn.Render(fmt.Sprintf("  %d warning(s) — review and fix (rerunning `forge` fixes most of them).", r.warns)))
+		ui.Println(ui.StyleWarn.Render(fmt.Sprintf("  %d warning(s) — review and fix (rerunning `forge` fixes most of them).", r.warns)))
 		return 1
 	default:
-		fmt.Println(ui.StyleOK.Render("  No indicators of compromise or risky exposure found."))
+		ui.Println(ui.StyleOK.Render("  No indicators of compromise or risky exposure found."))
 		return 0
 	}
 }

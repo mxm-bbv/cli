@@ -4,7 +4,6 @@
 package status
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,10 +14,10 @@ import (
 
 // Run prints the summary and returns an exit code (always 0; it only reports).
 func Run() int {
-	fmt.Println(ui.StyleTitle.Render("  forge status — " + hostname()))
-	fmt.Println()
+	ui.Println(ui.StyleTitle.Render("  forge status — " + hostname()))
+	ui.Println()
 
-	row := func(k, v string) { fmt.Printf("  %s  %s\n", ui.StyleKey.Render(pad(k)), v) }
+	row := func(k, v string) { ui.Printf("  %s  %s\n", ui.StyleKey.Render(pad(k)), v) }
 
 	// Docker + pinned images.
 	if v := cmd("docker", "version", "--format", "{{.Server.Version}}"); v != "" {
@@ -89,8 +88,8 @@ func Run() int {
 		row("Swap:", sw)
 	}
 
-	fmt.Println()
-	fmt.Println(ui.StyleMuted.Render("  deep scan: sudo forge audit    •    lint a compose file: forge lint <file>"))
+	ui.Println()
+	ui.Println(ui.StyleMuted.Render("  deep scan: sudo forge audit    •    lint a compose file: forge lint <file>"))
 	return 0
 }
 
