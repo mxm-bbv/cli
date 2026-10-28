@@ -3,6 +3,7 @@ package steps
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/mxm-bbv/cli/internal/config"
@@ -33,20 +34,9 @@ func tailscaleStep() Step {
 				}
 			}
 
-			if !tailscaleUp() {
-				key := strings.TrimSpace(c.Cfg.TailscaleAuthKey)
-				if key == "" && !system.DryRun {
-					return errors.New("this box has not joined your tailnet and no auth key was given — " +
-						"create one at https://login.tailscale.com/admin/settings/keys and rerun, " +
-						"or join manually with `tailscale up`")
-				}
-				args := []string{"up", "--auth-key=" + key}
-				logline := "tailscale up --auth-key=<hidden>"
-				if c.Cfg.TailscaleSSH {
-					args = append(args, "--ssh")
-					logline += " --ssh"
-				}
-				if _, err := system.RunRedacted(logline, "tailscale", args...); err != nil {
+			loggedIn := tailscaleUp()
+			if !loggedIn {
+				if err := joinTailnet(c); err != nil {
 					return err
 				}
 			}
@@ -56,6 +46,13 @@ func tailscaleStep() Step {
 				return err
 			}
 			c.TailnetIP = ip
+			if !loggedIn && strings.TrimSpace(c.Cfg.TailscaleAuthKey) == "" {
+				// A browser-approved machine belongs to the user, so its node
+				// key expires (180 days by default) and it silently drops off
+				// the tailnet — taking phone access to Portainer with it.
+				c.Notes = append(c.Notes, "Tailscale: disable key expiry for "+system.Hostname()+
+					" at https://login.tailscale.com/admin/machines (⋯ → Disable key expiry), otherwise it leaves the tailnet in ~180 days")
+			}
 			note := "Tailscale joined — tailnet IP " + ip
 			if c.Cfg.TailscaleSSH {
 				note += "; Tailscale SSH is on (emergency access from any tailnet device, e.g. your phone)"
@@ -63,6 +60,50 @@ func tailscaleStep() Step {
 			c.Notes = append(c.Notes, note)
 			return nil
 		},
+	}
+}
+
+// tailscaleLoginURLRe finds the login link `tailscale up` prints.
+var tailscaleLoginURLRe = regexp.MustCompile(`https://\S+`)
+
+// joinTailnet runs `tailscale up`. With an auth key it is unattended. Without
+// one it uses Tailscale's browser login: `tailscale up` prints a link and waits
+// until someone signs in (Google, GitHub, Microsoft, …) and approves the
+// machine — no keys that expire after a few days. The link is shown in the
+// runner with a QR code so it can be approved from a phone.
+func joinTailnet(c *Context) error {
+	key := strings.TrimSpace(c.Cfg.TailscaleAuthKey)
+	args, logline := []string{"up"}, "tailscale up"
+	if key != "" {
+		args = append(args, "--auth-key="+key)
+		logline += " --auth-key=<hidden>"
+	}
+	if c.Cfg.TailscaleSSH {
+		args = append(args, "--ssh")
+		logline += " --ssh"
+	}
+	if key != "" {
+		_, err := system.RunRedacted(logline, "tailscale", args...)
+		return err
+	}
+
+	defer system.SetAttention(nil)
+	_, err := system.RunWatch(logline, watchTailscaleLogin, "tailscale", args...)
+	if err != nil {
+		return fmt.Errorf("Tailscale login was not completed — press r for a fresh link: %w", err)
+	}
+	return nil
+}
+
+// watchTailscaleLogin turns the login link in `tailscale up` output into an
+// operator action (the runner shows it with a QR code).
+func watchTailscaleLogin(line string) {
+	if u := tailscaleLoginURLRe.FindString(line); u != "" {
+		system.SetAttention(&system.Attention{
+			Title: "Add this server to your Tailscale network",
+			URL:   u,
+			Hint:  "Scan the QR code with your phone (or open the link), sign in to Tailscale and approve. forge continues by itself.",
+		})
 	}
 }
 

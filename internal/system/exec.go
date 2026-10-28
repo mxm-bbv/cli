@@ -52,6 +52,34 @@ func Activity() string {
 	return activity
 }
 
+// Attention is something the operator must do while a step waits — e.g. open
+// a login link. The runner shows it prominently (with a QR code for URLs)
+// until the step clears it.
+type Attention struct {
+	Title string
+	URL   string
+	Hint  string
+}
+
+var (
+	attentionMu sync.RWMutex
+	attention   *Attention
+)
+
+// SetAttention publishes (or, with nil, clears) the current operator action.
+func SetAttention(a *Attention) {
+	attentionMu.Lock()
+	attention = a
+	attentionMu.Unlock()
+}
+
+// CurrentAttention returns the pending operator action, or nil.
+func CurrentAttention() *Attention {
+	attentionMu.RLock()
+	defer attentionMu.RUnlock()
+	return attention
+}
+
 // Run executes a command, streaming its output to the log and live display, and
 // returns the combined output.
 func Run(name string, args ...string) (string, error) {
@@ -65,11 +93,18 @@ func RunRedacted(logline, name string, args ...string) (string, error) {
 	return execute(logline, name, args, "")
 }
 
+// RunWatch executes like RunRedacted (logline is what gets recorded) and calls
+// onLine with every output line as it arrives — for commands that print
+// something the operator must act on while they wait, such as a login URL.
+func RunWatch(logline string, onLine func(string), name string, args ...string) (string, error) {
+	return executeEnv(logline, name, args, "", nil, onLine)
+}
+
 // RunEnv executes like Run but with extra KEY=VALUE entries appended to the
 // environment. The values never appear in CommandLog, so it is safe for
 // secrets consumed via env (e.g. `docker run -e KEY` without a value).
 func RunEnv(env []string, name string, args ...string) (string, error) {
-	return executeEnv(name+" "+strings.Join(args, " "), name, args, "", env)
+	return executeEnv(name+" "+strings.Join(args, " "), name, args, "", env, nil)
 }
 
 // RunShell runs a command through `bash -c`, for pipelines and redirects.
@@ -85,11 +120,12 @@ func RunInput(stdin, name string, args ...string) error {
 }
 
 func execute(logline, name string, args []string, stdin string) (string, error) {
-	return executeEnv(logline, name, args, stdin, nil)
+	return executeEnv(logline, name, args, stdin, nil, nil)
 }
 
-// executeEnv is execute with optional extra environment entries (never logged).
-func executeEnv(logline, name string, args []string, stdin string, extraEnv []string) (string, error) {
+// executeEnv is execute with optional extra environment entries (never logged)
+// and an optional per-line callback.
+func executeEnv(logline, name string, args []string, stdin string, extraEnv []string, onLine func(string)) (string, error) {
 	CommandLog = append(CommandLog, strings.TrimSpace(logline))
 	if DryRun {
 		return "", nil
@@ -123,6 +159,9 @@ func executeEnv(logline, name string, args []string, stdin string, extraEnv []st
 			buf.WriteString(line)
 			buf.WriteByte('\n')
 			setActivity(line)
+			if onLine != nil {
+				onLine(line)
+			}
 			if LogWriter != nil {
 				fmt.Fprintln(LogWriter, line)
 			}

@@ -3,10 +3,12 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
@@ -24,9 +26,11 @@ const (
 )
 
 type stepState struct {
-	name   string
-	status status
-	err    error
+	name    string
+	status  status
+	err     error
+	started time.Time
+	took    time.Duration
 }
 
 type stepDoneMsg struct {
@@ -35,36 +39,52 @@ type stepDoneMsg struct {
 	err    error
 }
 
-// RunnerModel drives sequential execution of the provisioning steps, with a
-// live output line, and a retry/skip/abort prompt when a step fails.
+// tickMsg refreshes elapsed times and the live output line.
+type tickMsg struct{}
+
+// RunnerModel drives sequential execution of the provisioning steps with a
+// live output line, an action panel (e.g. a Tailscale login QR code) and a
+// retry/skip/quit prompt when a step fails.
 type RunnerModel struct {
-	steps    []steps.Step
-	ctx      *steps.Context
-	states   []stepState
-	spinner  spinner.Model
-	current  int
-	paused   bool // waiting for the user to decide on a failed step
-	pausedAt int
-	Failed   bool
-	done     bool
-	logPath  string
+	steps     []steps.Step
+	ctx       *steps.Context
+	states    []stepState
+	spinner   spinner.Model
+	current   int
+	paused    bool // waiting for the user to decide on a failed step
+	pausedAt  int
+	quitArmed bool // ctrl+c pressed once while a step runs
+	Failed    bool
+	done      bool
+	logPath   string
+	started   time.Time
+	width     int
+	height    int
 }
 
 // NewRunner builds a runner model for the given steps and shared context.
 func NewRunner(st []steps.Step, ctx *steps.Context, logPath string) RunnerModel {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(ColorEmber)
-
+	sp := spinner.New(
+		spinner.WithSpinner(spinner.Dot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(ColorEmber)),
+	)
+	now := time.Now()
 	states := make([]stepState, len(st))
 	for i, s := range st {
 		states[i] = stepState{name: s.Name, status: statusPending}
 	}
-	return RunnerModel{steps: st, ctx: ctx, states: states, spinner: sp, logPath: logPath}
+	if len(states) > 0 {
+		states[0].status, states[0].started = statusRunning, now
+	}
+	return RunnerModel{steps: st, ctx: ctx, states: states, spinner: sp, logPath: logPath, started: now}
 }
 
 func (m RunnerModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, m.runStep(0))
+	return tea.Batch(m.spinner.Tick, m.runStep(0), tick())
+}
+
+func tick() tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 func (m RunnerModel) runStep(i int) tea.Cmd {
@@ -84,121 +104,258 @@ func (m RunnerModel) runStep(i int) tea.Cmd {
 	}
 }
 
+// start marks step i running and launches it, or finishes the run.
+func (m RunnerModel) start(i int) (RunnerModel, tea.Cmd) {
+	m.current = i
+	if i >= len(m.steps) {
+		m.done = true
+		return m, tea.Quit
+	}
+	m.states[i].status, m.states[i].started, m.states[i].err = statusRunning, time.Now(), nil
+	return m, m.runStep(i)
+}
+
 func (m RunnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+
+	case tea.KeyPressMsg:
+		key := strings.ToLower(msg.String())
 		if m.paused {
-			switch strings.ToLower(msg.String()) {
+			switch key {
 			case "r": // retry the failed step
-				m.states[m.pausedAt] = stepState{name: m.states[m.pausedAt].name, status: statusRunning}
 				m.paused = false
-				m.current = m.pausedAt
-				return m, m.runStep(m.pausedAt)
+				return m.start(m.pausedAt)
 			case "s": // skip and continue
 				m.states[m.pausedAt].status = statusSkip
 				m.paused = false
-				next := m.pausedAt + 1
-				m.current = next
-				if next >= len(m.steps) {
-					m.done = true
-					return m, tea.Quit
-				}
-				return m, m.runStep(next)
+				return m.start(m.pausedAt + 1)
 			case "q", "ctrl+c":
-				m.Failed = true
-				m.done = true
+				m.Failed, m.done = true, true
 				return m, tea.Quit
 			}
 			return m, nil
 		}
-		if msg.Type == tea.KeyCtrlC {
-			m.Failed = true
-			m.done = true
-			return m, tea.Quit
+		// A step is running: aborting may leave the box half-configured, so
+		// ctrl+c must be pressed twice.
+		if key == "ctrl+c" {
+			if m.quitArmed {
+				m.Failed, m.done = true, true
+				return m, tea.Quit
+			}
+			m.quitArmed = true
+			return m, nil
 		}
+		m.quitArmed = false
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
-	case stepDoneMsg:
-		m.states[msg.index].status = msg.status
-		m.states[msg.index].err = msg.err
-		if msg.status == statusErr {
-			// Pause and let the user decide instead of dying silently.
-			m.paused = true
-			m.pausedAt = msg.index
+
+	case tickMsg:
+		if m.done {
 			return m, nil
 		}
-		next := msg.index + 1
-		m.current = next
-		if next >= len(m.steps) {
-			m.done = true
-			return m, tea.Quit
+		return m, tick()
+
+	case stepDoneMsg:
+		s := &m.states[msg.index]
+		s.status, s.err = msg.status, msg.err
+		if msg.status != statusSkip {
+			s.took = time.Since(s.started)
 		}
-		m.states[next].status = statusRunning
-		return m, m.runStep(next)
-	}
-	if !m.done && !m.paused && m.current < len(m.states) {
-		m.states[m.current].status = statusRunning
+		if msg.status == statusErr {
+			// Pause and let the user decide instead of dying silently.
+			m.paused, m.pausedAt = true, msg.index
+			return m, nil
+		}
+		return m.start(msg.index + 1)
 	}
 	return m, nil
 }
 
-func (m RunnerModel) View() string {
-	var b strings.Builder
-	b.WriteString(StyleTitle.Render("  Forging your server…") + "\n\n")
+func (m RunnerModel) View() tea.View {
+	return tea.NewView(m.render())
+}
 
-	for _, s := range m.states {
-		var icon, name string
-		switch s.status {
-		case statusOK:
-			icon, name = StyleOK.Render(IconOK), s.name
-		case statusSkip:
-			icon = StyleMuted.Render(IconSkip)
-			name = StyleMuted.Render(s.name + "  (already done / skipped)")
-		case statusErr:
-			icon, name = StyleErr.Render(IconErr), StyleErr.Render(s.name)
-		case statusRunning:
-			icon, name = m.spinner.View(), StyleKey.Render(s.name)
-		default:
-			icon, name = StyleMuted.Render("·"), StyleMuted.Render(s.name)
+// render lays the runner out for the current terminal size. Every line is cut
+// to the terminal width — a wrapped line would break the inline redraw.
+func (m RunnerModel) render() string {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	var lines []string
+	add := func(s ...string) {
+		for _, l := range s {
+			lines = append(lines, strings.Split(l, "\n")...)
 		}
-		b.WriteString(fmt.Sprintf("  %s  %s\n", icon, name))
+	}
 
-		if s.status == statusRunning {
-			if act := system.Activity(); act != "" {
-				b.WriteString("       " + StyleMuted.Render(truncate(act, 76)) + "\n")
+	finished := 0
+	for _, s := range m.states {
+		if s.status == statusOK || s.status == statusSkip || s.status == statusErr {
+			finished++
+		}
+	}
+	total := len(m.states)
+	add("", StyleTitle.Render("  Forging "+system.Hostname())+
+		StyleMuted.Render(fmt.Sprintf("  ·  %d/%d steps  ·  %s", finished, total, clock(time.Since(m.started)))))
+	add("  " + progressBar(finished, total, min(width-4, 48)))
+	add("")
+
+	attn := system.CurrentAttention()
+	for i, s := range m.states {
+		// While the operator has something to do, show only the step that is
+		// waiting so the action panel fits on small terminals.
+		if attn != nil && s.status != statusRunning {
+			continue
+		}
+		add("  " + m.stepLine(s))
+		if s.status == statusRunning && attn == nil {
+			if act := cleanLine(system.Activity()); act != "" {
+				add("       " + StyleMuted.Render(act))
 			}
 		}
-	}
-
-	if m.paused {
-		b.WriteString("\n" + StyleErr.Render("  ✗ "+m.states[m.pausedAt].name+" failed:") + "\n")
-		if e := m.states[m.pausedAt].err; e != nil {
-			b.WriteString(StyleMuted.Render(indent(e.Error())) + "\n")
+		if m.paused && i == m.pausedAt {
+			add(m.failurePanel(s, width))
 		}
-		b.WriteString("\n  " + StyleWarn.Render("[r]") + " retry   " +
-			StyleWarn.Render("[s]") + " skip   " +
-			StyleWarn.Render("[q]") + " quit    " +
-			StyleMuted.Render("(full log: "+m.logPath+")") + "\n")
 	}
-	return b.String()
-}
 
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		return s[:n-1] + "…"
+	if attn != nil {
+		used := len(lines) + 1
+		add("", attentionPanel(attn, width, m.height-used))
+		if left := total - finished - 1; left > 0 {
+			add(StyleMuted.Render(fmt.Sprintf("  … %d more steps after this one", left)))
+		}
 	}
-	return s
-}
+	if m.quitArmed {
+		add("", StyleWarn.Render("  Press ctrl+c again to abort.")+
+			StyleMuted.Render(" The current step keeps running in the background and may leave the server half-configured."))
+	}
+	add("")
 
-func indent(s string) string {
-	lines := strings.Split(strings.TrimSpace(s), "\n")
-	for i := range lines {
-		lines[i] = "      " + lines[i]
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, width, "…")
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m RunnerModel) stepLine(s stepState) string {
+	switch s.status {
+	case statusOK:
+		return StyleOK.Render(IconOK) + "  " + s.name + "  " + StyleMuted.Render(dur(s.took))
+	case statusSkip:
+		return StyleMuted.Render(IconSkip + "  " + s.name + "  · skipped")
+	case statusErr:
+		return StyleErr.Render(IconErr+"  "+s.name) + "  " + StyleMuted.Render(dur(s.took))
+	case statusRunning:
+		// Dot frames carry their own trailing space.
+		return m.spinner.View() + " " + StyleKey.Render(s.name) + "  " + StyleMuted.Render(dur(time.Since(s.started)))
+	default:
+		return StyleMuted.Render("·  " + s.name)
+	}
+}
+
+// failurePanel shows the error (wrapped to the terminal) and the choices.
+func (m RunnerModel) failurePanel(s stepState, width int) string {
+	msg := "unknown error"
+	if s.err != nil {
+		msg = strings.TrimSpace(s.err.Error())
+	}
+	// The error carries the command's output tail; keep the panel readable
+	// and point at the full log for the rest.
+	if l := strings.Split(msg, "\n"); len(l) > 14 {
+		msg = strings.Join(append(l[:2], append([]string{"…"}, l[len(l)-11:]...)...), "\n")
+	}
+	inner := max(width-10, 20)
+	body := lipgloss.NewStyle().Width(inner).Render(cleanBlock(msg))
+	keys := StyleWarn.Render("[r]") + " retry   " + StyleWarn.Render("[s]") + " skip   " + StyleWarn.Render("[q]") + " quit"
+	if m.logPath != "" {
+		keys += StyleMuted.Render("   full log: " + m.logPath)
+	}
+	return lipgloss.NewStyle().MarginLeft(4).Render(
+		StyleErrBox.Render(StyleErr.Render("Step failed") + "\n\n" + body + "\n\n" + keys))
+}
+
+// attentionPanel renders an operator action: title, QR code (when there is
+// room), the link — clickable in terminals that support OSC 8 — and a hint.
+func attentionPanel(a *system.Attention, width, rows int) string {
+	parts := []string{StyleWarn.Render("▶  " + a.Title)}
+	if a.URL != "" {
+		qr := QRCode(a.URL)
+		qrRows, qrCols := strings.Count(qr, "\n")+1, ansi.StringWidth(strings.SplitN(qr, "\n", 2)[0])
+		// rows <= 0: terminal size unknown — show it rather than hide it.
+		fits := qr != "" && qrCols+8 <= width && (rows <= 0 || qrRows+9 <= rows)
+		if fits {
+			parts = append(parts, "", qr)
+		}
+		parts = append(parts, "", StyleKey.Hyperlink(a.URL).Render(a.URL))
+		if !fits && qr != "" {
+			parts = append(parts, StyleMuted.Render("(enlarge the terminal to get a QR code for your phone)"))
+		}
+	}
+	if a.Hint != "" {
+		parts = append(parts, "", StyleMuted.Width(min(max(width-12, 20), 70)).Render(a.Hint))
+	}
+	return lipgloss.NewStyle().MarginLeft(2).Render(StyleWarnBox.Render(strings.Join(parts, "\n")))
+}
+
+// progressBar draws a fixed-width bar for done/total.
+func progressBar(done, total, width int) string {
+	if width < 10 || total == 0 {
+		return ""
+	}
+	filled := width * done / total
+	return lipgloss.NewStyle().Foreground(ColorEmber).Render(strings.Repeat("━", filled)) +
+		StyleMuted.Render(strings.Repeat("─", width-filled))
+}
+
+// cleanLine makes a raw command output line safe to show on one terminal row:
+// no escape sequences, no carriage-return progress redraws, no tabs or other
+// control characters.
+func cleanLine(s string) string {
+	s = ansi.Strip(s)
+	if i := strings.LastIndex(s, "\r"); i >= 0 {
+		s = s[i+1:]
+	}
+	return strings.TrimSpace(strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		}
+		return r
+	}, s))
+}
+
+// cleanBlock applies cleanLine to every line of a multi-line text.
+func cleanBlock(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = cleanLine(l)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// dur formats a step duration compactly: 850ms → "<1s", 75s → "1m15s".
+func dur(d time.Duration) string {
+	switch {
+	case d < time.Second:
+		return "<1s"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	default:
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+}
+
+// clock formats the total elapsed time as mm:ss.
+func clock(d time.Duration) string {
+	return fmt.Sprintf("%02d:%02d", int(d.Minutes()), int(d.Seconds())%60)
 }
 
 // Summary renders the post-run report (printed by main after the program exits).

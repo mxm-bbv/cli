@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/huh"
+	"charm.land/huh/v2"
 
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
@@ -99,8 +99,11 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		// Tailscale details — only when the agent rides the tailnet.
 		huh.NewGroup(
 			huh.NewNote().Title("Tailscale").
-				Description("Create an auth key at https://login.tailscale.com/admin/settings/keys\nand install the Tailscale app on your laptop/phone to reach the agent."),
-			huh.NewInput().Title("Tailscale auth key (empty if this box already joined)").
+				Description("During setup forge shows a link and a QR code: scan it with your phone,\n"+
+					"sign in to Tailscale (Google, GitHub, Microsoft…) and approve this server.\n"+
+					"Install the Tailscale app on your phone/laptop to reach Portainer."),
+			huh.NewInput().Title("Tailscale auth key (optional)").
+				Description("Leave empty to log in with the link/QR. A key is only for unattended setups.").
 				EchoMode(huh.EchoModePassword).Value(&cfg.TailscaleAuthKey),
 			huh.NewConfirm().Title("Enable Tailscale SSH (emergency access from your phone)?").
 				Value(&cfg.TailscaleSSH),
@@ -224,11 +227,21 @@ func atoiOr(s string, def int) int {
 	return def
 }
 
-// forgeTheme tints the huh form with the ember palette.
-func forgeTheme() *huh.Theme {
-	t := huh.ThemeCharm()
-	t.Focused.Title = t.Focused.Title.Foreground(ColorEmber).Bold(true)
-	t.Focused.NoteTitle = t.Focused.NoteTitle.Foreground(ColorGold).Bold(true)
-	t.Focused.SelectSelector = t.Focused.SelectSelector.Foreground(ColorEmber)
-	return t
+// forgeTheme tints huh's Charm theme with the ember palette, for dark and
+// light terminals alike (huh detects which one it is running in).
+func forgeTheme() huh.Theme {
+	return huh.ThemeFunc(func(isDark bool) *huh.Styles {
+		t := huh.ThemeCharm(isDark)
+		t.Focused.Title = t.Focused.Title.Foreground(ColorEmber).Bold(true)
+		t.Focused.NoteTitle = t.Focused.NoteTitle.Foreground(ColorGold).Bold(true)
+		t.Focused.SelectSelector = t.Focused.SelectSelector.Foreground(ColorEmber)
+		t.Focused.NextIndicator = t.Focused.NextIndicator.Foreground(ColorEmber)
+		t.Focused.PrevIndicator = t.Focused.PrevIndicator.Foreground(ColorEmber)
+		t.Focused.TextInput.Prompt = t.Focused.TextInput.Prompt.Foreground(ColorEmber)
+		t.Focused.FocusedButton = t.Focused.FocusedButton.Background(ColorEmber)
+		t.Focused.Next = t.Focused.FocusedButton
+		t.Blurred.Title = t.Blurred.Title.Foreground(ColorAsh)
+		t.Group.Title = t.Focused.Title
+		return t
+	})
 }
