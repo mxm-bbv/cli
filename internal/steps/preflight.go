@@ -39,9 +39,25 @@ func preflightStep() Step {
 			// user's sudo group membership is useless, and once root login is
 			// disabled nobody could administer the box. iproute2 provides `ss`
 			// for verifying sshd's listening port.
-			return aptInstall("ca-certificates", "curl", "gnupg", "sudo", "openssh-client", "iproute2")
+			if err := aptInstall("ca-certificates", "curl", "gnupg", "sudo", "openssh-client", "iproute2"); err != nil {
+				return err
+			}
+			// hostnamectl/timedatectl talk to systemd over D-Bus. Minimal
+			// images (debootstrap minbase, some VPS templates) ship systemd
+			// without a bus, and both fail with "Failed to connect to bus".
+			return ensureOneOf([]string{"dbus", "dbus-broker"}, "dbus")
 		},
 	}
+}
+
+// ensureOneOf installs pkg unless one of the alternatives is already present.
+func ensureOneOf(alternatives []string, pkg string) error {
+	for _, alt := range alternatives {
+		if pkgInstalled(alt) {
+			return nil
+		}
+	}
+	return aptInstall(pkg)
 }
 
 // Host probes, as variables so tests can provision "as" any distro on any

@@ -107,17 +107,8 @@ var timeSyncPkgs = []string{"systemd-timesyncd", "chrony", "ntpsec", "ntp", "ope
 // ensureTimeSync installs systemd-timesyncd when no NTP client is present, then
 // enables synchronisation. TLS, TOTP and log correlation all need a sane clock.
 func ensureTimeSync() error {
-	have := false
-	for _, p := range timeSyncPkgs {
-		if pkgInstalled(p) {
-			have = true
-			break
-		}
-	}
-	if !have {
-		if err := aptInstall("systemd-timesyncd"); err != nil {
-			return err
-		}
+	if err := ensureOneOf(timeSyncPkgs, "systemd-timesyncd"); err != nil {
+		return err
 	}
 	// Best-effort: containers often can't set the clock.
 	_, _ = system.Run("timedatectl", "set-ntp", "true")

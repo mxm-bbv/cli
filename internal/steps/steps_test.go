@@ -39,6 +39,7 @@ func TestDryRunAllSteps(t *testing.T) {
 		"linux/ubuntu/dists/noble/Release",                        // docker repo availability checked first
 		"sources.list.d/docker.list",                              // docker apt source (always written)
 		"ca-certificates curl gnupg sudo openssh-client iproute2", // sudo: minimal Debian lacks it
+		"--force-confold dbus",                      // hostnamectl/timedatectl need a bus
 		"fail2ban python3-systemd",                                // journald backend needs python3-systemd
 		"useradd -m -s /bin/bash deploy",                          // deploy user
 		"usermod -aG sudo deploy",                                 // sudo group
