@@ -3,6 +3,7 @@ package steps
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"os"
 	"strings"
 
 	"github.com/mxm-bbv/cli/internal/config"
@@ -48,12 +49,18 @@ func portainerStep() Step {
 			// If an agent already exists, keep it only when its binding is
 			// already what we want AND it has a secret; otherwise replace it —
 			// re-running forge on an old box must fix an insecure agent.
+			// The secret: the one given (wizard, $PORTAINER_AGENT_SECRET,
+			// `forge agent-secret`), else the one this box already uses.
+			want := c.Cfg.AgentSecret
+			if want == "" {
+				want = storedAgentSecret()
+			}
 			if containerExists("portainer_agent") {
 				hostIP, secret := inspectAgent()
-				if hostIP == bindIP && secret != "" {
+				if hostIP == bindIP && secret != "" && (want == "" || want == secret) {
 					c.AgentSecret = secret
-					c.Notes = append(c.Notes, "Portainer Agent already bound to "+publish+" with a secret — left as is")
-					return nil
+					c.Notes = append(c.Notes, "Portainer Agent already bound to "+publish+" with its secret — left as is")
+					return saveAgentSecret(secret)
 				}
 				if _, err := system.Run("docker", "rm", "-f", "portainer_agent"); err != nil {
 					return err
@@ -63,8 +70,12 @@ func portainerStep() Step {
 
 			// AGENT_SECRET: without it, ANY Portainer server that can reach the
 			// port can pair with the agent.
+			c.AgentSecret = want
 			if c.AgentSecret == "" {
-				c.AgentSecret = randomHex(16)
+				c.AgentSecret, c.AgentSecretNew = randomHex(16), true
+			}
+			if err := saveAgentSecret(c.AgentSecret); err != nil {
+				return err
 			}
 			if err := runAgentContainer(publish, c.AgentSecret); err != nil {
 				return err
@@ -232,6 +243,33 @@ func containerExists(name string) bool {
 }
 
 // randomHex returns n random bytes hex-encoded (2n characters).
+// agentEnvPath keeps this box's AGENT_SECRET (root-only) for later runs
+// — `forge tailscale` starting a deferred agent must use the same one.
+var agentEnvPath = "/etc/forge/agent.env"
+
+func storedAgentSecret() string {
+	data, err := os.ReadFile(agentEnvPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(line, "AGENT_SECRET="); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func saveAgentSecret(secret string) error {
+	if storedAgentSecret() == secret {
+		return nil
+	}
+	if _, err := system.Run("install", "-m", "0700", "-d", "/etc/forge"); err != nil {
+		return err
+	}
+	return system.WriteFile(agentEnvPath, "AGENT_SECRET="+secret+"\n", 0o600)
+}
+
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {

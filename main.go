@@ -43,6 +43,8 @@ func main() {
 			os.Exit(runCaddy(os.Args[2:]))
 		case "ssh":
 			os.Exit(runSSH(os.Args[2:]))
+		case "agent-secret":
+			os.Exit(runAgentSecret())
 		case "tripwire":
 			os.Exit(runTripwire(os.Args[2:]))
 		case "tailscale":
@@ -132,6 +134,9 @@ func main() {
 
 	// Unattended Tailscale login (CI, image builds): Tailscale's usual env var.
 	cfg.TailscaleAuthKey = os.Getenv("TS_AUTHKEY")
+	if s := os.Getenv("PORTAINER_AGENT_SECRET"); s != "" && cfg.AgentSecret == "" {
+		cfg.AgentSecret = s
+	}
 
 	// Keep the answers for `forge tailscale` / `forge github` later on.
 	if !*dryRun {

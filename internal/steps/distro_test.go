@@ -592,3 +592,29 @@ func TestCaddyFallsBackWithoutGitHub(t *testing.T) {
 		}
 	}
 }
+
+// TestSharedAgentSecret: a Portainer Server has ONE AGENT_SECRET for all its
+// agents, so a given secret is used as-is (and kept for later runs); only
+// the first server generates one.
+func TestSharedAgentSecret(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	prev := agentEnvPath
+	agentEnvPath = filepath.Join(t.TempDir(), "agent.env")
+	t.Cleanup(func() { agentEnvPath = prev })
+
+	cfg := testConfig()
+	cfg.AgentSecret = "shared-secret-of-my-portainer"
+	ctx, log := runAll(t, cfg)
+	if ctx.AgentSecret != cfg.AgentSecret || ctx.AgentSecretNew {
+		t.Errorf("the given secret must be used, got %q (new=%v)", ctx.AgentSecret, ctx.AgentSecretNew)
+	}
+	if strings.Contains(log, cfg.AgentSecret) || !strings.Contains(log, "write "+agentEnvPath+" (600)") {
+		t.Errorf("the secret is kept root-only and never logged:\n%s", log)
+	}
+
+	system.CommandLog = nil
+	cfg.AgentSecret = ""
+	if ctx, _ = runAll(t, cfg); !ctx.AgentSecretNew || len(ctx.AgentSecret) != 32 {
+		t.Errorf("without one, the first server generates it: %q new=%v", ctx.AgentSecret, ctx.AgentSecretNew)
+	}
+}

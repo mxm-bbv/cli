@@ -125,6 +125,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 						}
 						return nil
 					}),
+				huh.NewInput().Title("AGENT_SECRET (the one your Portainer Server runs with)").
+					Description("The same on every server. Blank: keep this server's, or generate one for your first.").
+					EchoMode(huh.EchoModePassword).Value(&cfg.AgentSecret).Validate(config.ValidAgentSecret),
 			},
 		},
 		page{

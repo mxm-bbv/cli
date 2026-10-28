@@ -62,6 +62,7 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `forge status` | One-glance summary: Docker, agent exposure, firewall, tailnet, alert timers, swap |
 | `forge lint <compose.yml>` | Static-check a Compose file **before** deploy for the same risky settings |
 | `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
+| `sudo forge agent-secret` | Switch this server's Portainer Agent to your shared `AGENT_SECRET` (asked hidden). A Portainer Server takes one secret for all agents — start it with `-e AGENT_SECRET=…` and use the same one on every server (also the wizard field, or `PORTAINER_AGENT_SECRET=…`) |
 | `sudo forge tailscale` | Log in to Tailscale (QR code) and start the tailnet-only Portainer Agent. Safe to re-run |
 | `sudo forge github owner/repo …` | Add read-only deploy keys for more repos (one-time code on your phone) |
 | `sudo forge caddy [owner/repo]` | Install or update the Caddy web server from your repo |

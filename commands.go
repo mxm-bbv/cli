@@ -131,6 +131,36 @@ func rememberSSHTailnetOnly(on bool) {
 	}
 }
 
+// runAgentSecret switches this box's Portainer Agent to the shared
+// AGENT_SECRET (asked for hidden, never on the command line).
+func runAgentSecret() int {
+	if !requireRoot("agent-secret") {
+		return 1
+	}
+	secret, err := ui.AskSecret("AGENT_SECRET of your Portainer Server")
+	if err != nil {
+		return 1
+	}
+	if secret == "" {
+		ui.Println(ui.StyleMuted.Render("  Nothing changed."))
+		return 0
+	}
+	if err := config.ValidAgentSecret(secret); err != nil {
+		ui.Println(ui.StyleErr.Render("  AGENT_SECRET: " + err.Error()))
+		return 2
+	}
+	cfg, _ := loadState()
+	cfg.AgentSecret = secret
+	cfg.InstallTailscale = true
+	logPath := openLog(false)
+	st, ctx := steps.TailscaleSteps(cfg)
+	if !runSteps(st, ctx, logPath) {
+		return 1
+	}
+	ui.Println("\n" + ui.Report("Portainer Agent uses the shared secret", ctx, logPath))
+	return 0
+}
+
 // runTripwire is what the forge-tripwire timer runs every minute.
 func runTripwire(args []string) int {
 	if !requireRoot("tripwire") {

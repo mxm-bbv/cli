@@ -17,6 +17,7 @@ type Context struct {
 	TailnetIP         string          // populated by the tailscale step
 	AgentSecret       string          // AGENT_SECRET for pairing the Portainer Agent (shown once)
 	AgentDeferred     bool            // tailnet agent waits for `forge tailscale`
+	AgentSecretNew    bool            // AgentSecret was generated here — the Portainer Server needs it
 	TailscaleLogin    bool            // log in to Tailscale now (browser/QR) instead of leaving it for later
 	GitHubRepos       []string        // repos whose deploy key works (ssh -T verified)
 	Notes             []string
