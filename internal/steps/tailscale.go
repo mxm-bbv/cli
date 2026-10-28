@@ -59,6 +59,10 @@ func tailscaleStep() Step {
 				c.Notes = append(c.Notes, "Tailscale: disable key expiry for "+system.Hostname()+
 					" at https://login.tailscale.com/admin/machines (⋯ → Disable key expiry), otherwise it leaves the tailnet in ~180 days")
 			}
+			if c.TailscaleLogin && !c.Cfg.SSHTailnetOnly {
+				c.Notes = append(c.Notes, fmt.Sprintf("Optional: SSH only over Tailscale. Reconnect with  ssh -p %d %s@%s  and run  sudo forge ssh tailnet-only",
+					currentSSHPorts()[0], c.Cfg.Username, ip))
+			}
 			note := "Tailscale connected — tailnet IP " + ip
 			if c.Cfg.TailscaleSSH {
 				note += "; Tailscale SSH is on (emergency access from any tailnet device, e.g. your phone)"

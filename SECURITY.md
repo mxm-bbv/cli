@@ -53,6 +53,17 @@ deliberate, reviewable act.
   fingerprint-pinned) after a one-time device-code approval. Its token lives
   only in `/run/forge-gh` (tmpfs, root-only) and is deleted right after —
   also when forge is aborted, which kills a login still waiting for approval.
+- **Tripwire** — `forge tripwire` (systemd timer, every minute, low
+  priority) snapshots the usual persistence points and sends every
+  difference from the last run to Telegram once; an alert that couldn't be
+  sent is retried. forge re-records the baseline after its own changes.
+  Root can of course disable it — it is there to catch the minutes between
+  the break-in and that.
+- **SSH over Tailscale only (optional)** — `forge ssh tailnet-only` removes
+  sshd's ports from UFW (`tailscale0` stays trusted) only when the operator's
+  current session comes from a tailnet address and the node key does not
+  expire — the two ways this would lock you out. The provider's web console
+  is the last resort; the setup remembers the choice and doesn't reopen it.
 - **DOCKER-USER firewall** — Docker inserts its own iptables chains ahead of
   UFW's INPUT rules, so `ufw default deny incoming` does **not** protect
   `-p`-published container ports. forge installs a persistent DOCKER-USER

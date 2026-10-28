@@ -10,6 +10,7 @@ import (
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/system"
+	"github.com/mxm-bbv/cli/internal/tripwire"
 	"github.com/mxm-bbv/cli/internal/ui"
 )
 
@@ -29,7 +30,122 @@ func runSteps(st []steps.Step, ctx *steps.Context, logPath string) bool {
 		ui.Println(ui.StyleErr.Render("\n  Aborted with a failed step. Full log: " + logPath))
 		return false
 	}
+	// What forge just changed is not an intrusion.
+	if !system.DryRun && tripwire.Installed() {
+		tripwire.Run(true)
+	}
 	return true
+}
+
+// runCaddy installs (or updates) the Caddy web server from the given repo,
+// the one chosen at setup, or the default.
+func runCaddy(args []string) int {
+	if !requireRoot("caddy " + strings.Join(args, " ")) {
+		return 1
+	}
+	cfg, ok := loadState()
+	if len(args) > 0 {
+		cfg.CaddyRepo = args[0]
+	} else if cfg.CaddyRepo == "" {
+		cfg.CaddyRepo = config.DefaultCaddyRepo
+	}
+	if err := config.ValidGitHubRepo(cfg.CaddyRepo); err != nil {
+		ui.Println(ui.StyleErr.Render("  " + cfg.CaddyRepo + ": " + err.Error() + "\n  usage: sudo forge caddy [owner/repo]"))
+		return 2
+	}
+	logPath := openLog(false)
+	st, ctx := steps.CaddySteps(cfg)
+	if !runSteps(st, ctx, logPath) {
+		return 1
+	}
+	if ok {
+		if saved, err := config.Load(config.StatePath); err == nil {
+			saved.CaddyRepo = cfg.CaddyRepo
+			_ = saveState(saved)
+		}
+	}
+	ui.Println("\n" + ui.Report("Caddy is serving", ctx, logPath))
+	return 0
+}
+
+// runSSH shows or changes whether SSH is reachable from the internet.
+func runSSH(args []string) int {
+	if !requireRoot("ssh " + strings.Join(args, " ")) {
+		return 1
+	}
+	mode := ""
+	if len(args) > 0 {
+		mode = args[0]
+	}
+	switch mode {
+	case "":
+		if steps.SSHOpenToInternet() {
+			ui.Println("  SSH: " + ui.StyleWarn.Render("open to the internet") +
+				ui.StyleMuted.Render("  (only over Tailscale: sudo forge ssh tailnet-only)"))
+		} else {
+			ui.Println("  SSH: " + ui.StyleOK.Render("Tailscale only") +
+				ui.StyleMuted.Render("  (reopen: sudo forge ssh public)"))
+		}
+		return 0
+
+	case "tailnet-only":
+		ip, err := steps.CheckTailnetOnly()
+		if err != nil {
+			ui.Println(ui.StyleErr.Render("  Not closing SSH: ") + err.Error())
+			return 1
+		}
+		ok, err := ui.Confirm("Close SSH to the internet? Only Tailscale will reach it.",
+			"The way back in if Tailscale ever fails: your provider's web console, then  sudo forge ssh public")
+		if err != nil || !ok {
+			ui.Println(ui.StyleMuted.Render("  Nothing changed."))
+			return 0
+		}
+		if err := steps.SetSSHTailnetOnly(true); err != nil {
+			ui.Println(ui.StyleErr.Render("  " + err.Error()))
+			return 1
+		}
+		rememberSSHTailnetOnly(true)
+		ui.Println(ui.StyleOK.Render("  SSH now answers only over Tailscale") + "  — " + ip +
+			ui.StyleMuted.Render("\n  Keep this session open and check a new one before you log out."))
+		return 0
+
+	case "public":
+		if err := steps.SetSSHTailnetOnly(false); err != nil {
+			ui.Println(ui.StyleErr.Render("  " + err.Error()))
+			return 1
+		}
+		rememberSSHTailnetOnly(false)
+		ui.Println(ui.StyleOK.Render("  SSH is open to the internet again") + ui.StyleMuted.Render(" (key-only, fail2ban)"))
+		return 0
+	}
+	ui.Println(ui.StyleErr.Render("  usage: sudo forge ssh [tailnet-only | public]"))
+	return 2
+}
+
+// rememberSSHTailnetOnly records the choice, so a re-run of the setup keeps it.
+func rememberSSHTailnetOnly(on bool) {
+	if cfg, ok := loadState(); ok {
+		cfg.SSHTailnetOnly = on
+		_ = saveState(cfg)
+	}
+}
+
+// runTripwire is what the forge-tripwire timer runs every minute.
+func runTripwire(args []string) int {
+	if !requireRoot("tripwire") {
+		return 1
+	}
+	switch {
+	case len(args) == 0:
+		return tripwire.Run(false)
+	case args[0] == "--baseline":
+		return tripwire.Run(true)
+	case args[0] == "--show":
+		tripwire.Show()
+		return 0
+	}
+	ui.Println(ui.StyleErr.Render("  usage: sudo forge tripwire [--baseline | --show]"))
+	return 2
 }
 
 // saveState records the wizard's answers (no secrets) at config.StatePath.

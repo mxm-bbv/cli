@@ -47,6 +47,8 @@ hostname overrides, snap-packaged Docker, and LXC/OpenVZ containers (no swap).
 | **Firewall** | UFW (allow SSH/80/443; the old SSH port stays open until sshd answers on the new one) + fail2ban SSH jail (journald) + **DOCKER-USER rules** (IPv4 + IPv6) so published container ports can't bypass UFW |
 | **Updates** | unattended-upgrades for automatic security patches; `needrestart` restarts services still running old libraries; optional reboot at 04:00 when a kernel fix needs it |
 | **Alerts**  | Telegram push (optional): daily `forge audit`, host-health warnings (load/disk/reboot), SSH-login notices |
+| **Tripwire** | With alerts: every minute, a Telegram alarm on what intruders change to stay — new SSH keys (and `command=`/`from=` options), accounts, sudo rights, sshd auth policy, listening ports, systemd units, cron jobs, startup files (`ld.so.preload`, `.bashrc`…), SUID/SGID files, kernel taint from foreign modules, container images. Each change is reported once; forge's own changes never alarm |
+| **Web server** | Your Caddy setup (`caddy_repo`, a repo with `docker-compose.prod.yml`) on :80/:443 — a private repo is cloned with its own read-only deploy key; creates the `proxy-network` network and `PROJECTS_PATH` |
 | **Base**    | hostname (+ `/etc/hosts`, kept across cloud-init reboots), timezone, NTP, swap file, journal capped at 500 MB, operator utilities (htop, ncdu, jq, tmux…) |
 | **Audit**   | `sudo forge audit` — read-only scan for rootkit/proxyjacking IOCs and risky Docker exposure |
 
@@ -62,6 +64,9 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
 | `sudo forge tailscale` | Log in to Tailscale (QR code) and start the tailnet-only Portainer Agent. Safe to re-run |
 | `sudo forge github owner/repo …` | Add read-only deploy keys for more repos (one-time code on your phone) |
+| `sudo forge caddy [owner/repo]` | Install or update the Caddy web server from your repo |
+| `sudo forge ssh tailnet-only` | **Optional**: close SSH to the internet, so only Tailscale reaches it. Refuses unless you're connected over Tailscale right now and the node key never expires; `sudo forge ssh public` reopens it, `sudo forge ssh` shows the state |
+| `sudo forge tripwire --show` | What the tripwire watches right now (`--baseline` re-records it) |
 | `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |
 
 Every step is **idempotent** — re-running skips what's already done. SSH

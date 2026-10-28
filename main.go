@@ -38,6 +38,12 @@ func main() {
 				os.Exit(2)
 			}
 			os.Exit(lint.Run(os.Args[2]))
+		case "caddy":
+			os.Exit(runCaddy(os.Args[2:]))
+		case "ssh":
+			os.Exit(runSSH(os.Args[2:]))
+		case "tripwire":
+			os.Exit(runTripwire(os.Args[2:]))
 		case "tailscale":
 			os.Exit(runTailscale())
 		case "github":
@@ -189,7 +195,10 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 		}
 		return cfg, nil
 	}
-	cfg, err := ui.RunForm(config.Default(), true)
+	// A re-run starts from the previous answers (and keeps choices made
+	// later, like `forge ssh tailnet-only`).
+	prev, _ := loadState()
+	cfg, err := ui.RunForm(prev, true)
 	if err != nil {
 		return cfg, err
 	}

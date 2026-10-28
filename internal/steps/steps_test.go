@@ -80,6 +80,12 @@ func TestDryRunAllSteps(t *testing.T) {
 		"ufw delete allow 22/tcp",                     // transitional SSH rule removed
 		"pam.d/sshd",                                  // SSH-login alerts via pam_exec
 		"ssh-login-notify.sh",                         // login hook script
+		"tripwire --baseline",                         // tripwire baseline = the finished server
+		"forge-tripwire.timer",                        // checked every minute
+		"/home/deploy/.ssh/github-mr-studio-kz-ua--caddy-core.pub --repo MR-Studio-KZ-UA/caddy-core", // private caddy repo gets a deploy key
+		"git clone --quiet git@github.com:MR-Studio-KZ-UA/caddy-core.git /home/deploy/caddy-core",    // …and is cloned with it
+		"write /home/deploy/caddy-core/.env",                                        // PROJECTS_PATH
+		"-f /home/deploy/caddy-core/docker-compose.prod.yml up -d --remove-orphans", // the web server runs
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
@@ -198,6 +204,7 @@ func TestSkipDisabledFeatures(t *testing.T) {
 	cfg.EnableAutoUpdates = false
 	cfg.EnableAlerts = false
 	cfg.HardenKernel = false
+	cfg.CaddyRepo = ""
 
 	st, ctx := BuildSteps(cfg)
 	skipped := map[string]bool{}
@@ -216,6 +223,8 @@ func TestSkipDisabledFeatures(t *testing.T) {
 		"Telegram alerts: daily audit, health & SSH-login pushes",
 		"Kernel & network hardening (sysctl)",
 		"GitHub: read-only deploy keys for your repos",
+		"Tripwire: alert on what intruders change",
+		"Caddy web server (your caddy repo)",
 	} {
 		if !skipped[name] {
 			t.Errorf("expected step %q to be skipped when its feature is disabled", name)

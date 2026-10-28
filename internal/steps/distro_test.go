@@ -2,8 +2,10 @@ package steps
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -473,5 +475,48 @@ func TestSSHDCryptoPolicy(t *testing.T) {
 		if strings.Contains(conf, risky) {
 			t.Errorf("%s locks out agents with several keys / VS Code / pinned host keys — leave the default", risky)
 		}
+	}
+}
+
+func TestTailnetAddresses(t *testing.T) {
+	for ip, want := range map[string]bool{
+		"100.101.102.103": true, "100.64.0.1": true, "[fd7a:115c:a1e0::1]": true,
+		"100.128.0.1": false, "203.0.113.7": false, "10.0.0.5": false, "": false,
+	} {
+		if got := IsTailnetIP(ip); got != want {
+			t.Errorf("IsTailnetIP(%q) = %v, want %v", ip, got, want)
+		}
+	}
+}
+
+// TestFirewallKeepsSSHTailnetOnly: once SSH was closed to the internet, a
+// re-run of the setup must not reopen it.
+func TestFirewallKeepsSSHTailnetOnly(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	cfg := testConfig()
+	cfg.SSHTailnetOnly = true
+	_, log := runAll(t, cfg)
+	for _, rule := range []string{"ufw allow 22/tcp", "ufw allow 2222/tcp"} {
+		if strings.Contains(log, rule) {
+			t.Errorf("tailnet-only SSH reopened by %q", rule)
+		}
+	}
+	if !strings.Contains(log, "ufw allow in on tailscale0") {
+		t.Error("the tailnet must stay trusted, or nobody gets in")
+	}
+}
+
+// TestSessionClient: sudo strips SSH_CONNECTION, so the client address is
+// read from the nearest ancestor that still has it.
+func TestSessionClient(t *testing.T) {
+	if os.Getenv("FORGE_SESSION_HELPER") == "1" {
+		fmt.Print(SessionClient())
+		os.Exit(0)
+	}
+	cmd := exec.Command("sh", "-c", `env -u SSH_CONNECTION FORGE_SESSION_HELPER=1 "$0" -test.run '^TestSessionClient$'`, os.Args[0])
+	cmd.Env = append(os.Environ(), "SSH_CONNECTION=100.64.1.2 51234 203.0.113.7 22")
+	out, err := cmd.Output()
+	if err != nil || string(out) != "100.64.1.2" {
+		t.Fatalf("got %q (%v), want the shell's SSH client 100.64.1.2", out, err)
 	}
 }

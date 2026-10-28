@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/mxm-bbv/cli/internal/system"
@@ -38,7 +39,7 @@ func Cleanup() {
 func githubStep() Step {
 	return Step{
 		Name: "GitHub: read-only deploy keys for your repos",
-		Skip: func(c *Context) bool { return len(c.Cfg.GitHubRepos) == 0 },
+		Skip: func(c *Context) bool { return len(c.Cfg.GitHubRepos) == 0 && c.Cfg.CaddyRepo == "" },
 		Run:  setupGitHubRepos,
 	}
 }
@@ -69,8 +70,15 @@ func setupGitHubRepos(c *Context) error {
 		return err
 	}
 
-	keys := make([]deployKey, 0, len(cfg.GitHubRepos))
-	for _, repo := range cfg.GitHubRepos {
+	repos := slices.Clone(cfg.GitHubRepos)
+	if r := cfg.CaddyRepo; r != "" && !repoIsPublic(r) && !slices.ContainsFunc(repos, func(s string) bool { return strings.EqualFold(s, r) }) {
+		repos = append(repos, r) // the caddy step clones it with this key
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+	keys := make([]deployKey, 0, len(repos))
+	for _, repo := range repos {
 		k := deployKeyFor(sshDir, repo)
 		if err := prepareDeployKey(c, k); err != nil {
 			return err

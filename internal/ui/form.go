@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"strconv"
@@ -21,6 +22,7 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	src := string(cfg.AdminKeySource)
 	pmode := string(cfg.PortainerAccess)
 	repos := strings.Join(cfg.GitHubRepos, ", ")
+	installCaddy, caddyRepo := cfg.CaddyRepo != "", cmp.Or(cfg.CaddyRepo, config.DefaultCaddyRepo)
 	if !cfg.InstallPortainer {
 		pmode = "off"
 	}
@@ -119,6 +121,18 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 				}),
 		),
 		huh.NewGroup(
+			huh.NewNote().Title("Web server").
+				Description("Your Caddy setup as the server's web server on :80/:443: cloned from GitHub\n"+
+					"(a private repo gets a read-only deploy key) and started with docker compose.\n"+
+					"Later:  sudo forge caddy"),
+			huh.NewConfirm().Title("Install your Caddy web server?").Value(&installCaddy),
+		),
+		huh.NewGroup(
+			huh.NewInput().Title("Caddy repo (owner/repo with a docker-compose.prod.yml)").Value(&caddyRepo).
+				Validate(config.ValidGitHubRepo),
+		).WithHideFunc(func() bool { return !installCaddy }),
+
+		huh.NewGroup(
 			huh.NewConfirm().Title("Install Watchtower (monitor-only update checks)?").Value(&cfg.InstallWatchtower),
 			huh.NewConfirm().Title("Enable firewall (UFW + fail2ban + DOCKER-USER container rules)?").Value(&cfg.EnableFirewall),
 			huh.NewConfirm().Title("Enable unattended security upgrades?").Value(&cfg.EnableAutoUpdates),
@@ -141,6 +155,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 			huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).
 				Validate(config.ValidTelegramChatID),
 			huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
+			huh.NewConfirm().Title("Tripwire: alert within a minute on what intruders change?").
+				Description("New SSH keys, users, sudo rights, open ports, services, cron jobs, SUID files…").
+				Value(&cfg.Tripwire),
 		).WithHideFunc(func() bool { return !cfg.EnableAlerts }),
 
 		// SSH hardening — the dangerous bits, asked explicitly.
@@ -158,6 +175,10 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	}
 
 	cfg.GitHubRepos, _ = config.ParseGitHubRepos(repos) // validated by the field
+	cfg.CaddyRepo = ""
+	if installCaddy {
+		cfg.CaddyRepo = caddyRepo
+	}
 	cfg.AdminKeySource = config.AdminKeySource(src)
 	cfg.SwapGB = atoiOr(swap, cfg.SwapGB)
 	cfg.SSHPort = atoiOr(port, cfg.SSHPort)
@@ -221,6 +242,18 @@ func fitHeight(_ tea.Model, msg tea.Msg) tea.Msg {
 		return ws
 	}
 	return msg
+}
+
+// Confirm shows a yes/no prompt (default: no).
+func Confirm(title, description string) (bool, error) {
+	ok := false
+	form := newForm(huh.NewGroup(
+		huh.NewConfirm().Title(title).Description(description).Value(&ok),
+	))
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 func nonEmpty(field string) func(string) error {

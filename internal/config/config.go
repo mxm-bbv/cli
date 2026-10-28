@@ -47,9 +47,12 @@ type Config struct {
 	// get one read-only deploy key each, registered through the GitHub API.
 	// GenerateGitHubKey is the older manual path: one key the user pastes
 	// into GitHub themselves.
-	GitHubRepos       []string `yaml:"github_repos,omitempty"`
-	GenerateGitHubKey bool     `yaml:"generate_github_key"`
-	GitHubKeyComment  string   `yaml:"github_key_comment"`
+	GitHubRepos []string `yaml:"github_repos,omitempty"`
+	// CaddyRepo is the operator's Caddy setup (a repo with a
+	// docker-compose.prod.yml), run as the box's web server. "" = none.
+	CaddyRepo         string `yaml:"caddy_repo"`
+	GenerateGitHubKey bool   `yaml:"generate_github_key"`
+	GitHubKeyComment  string `yaml:"github_key_comment"`
 
 	// Base system tuning
 	Hostname string `yaml:"hostname"`
@@ -77,6 +80,7 @@ type Config struct {
 	// a phone) even if sshd or Portainer are down. In tailnet mode the
 	// Portainer Agent waits for that login, since it binds to the tailnet IP.
 	InstallTailscale bool            `yaml:"install_tailscale"`
+	SSHTailnetOnly   bool            `yaml:"ssh_tailnet_only"` // set by `forge ssh tailnet-only`, never by the wizard
 	PortainerAccess  PortainerAccess `yaml:"portainer_access"`
 	TailscaleSSH     bool            `yaml:"tailscale_ssh"`
 
@@ -86,6 +90,7 @@ type Config struct {
 	EnableAlerts     bool   `yaml:"enable_alerts"`
 	AlertsChatID     string `yaml:"alerts_chat_id"`
 	AlertOnSSHLogin  bool   `yaml:"alert_on_ssh_login"`
+	Tripwire         bool   `yaml:"tripwire"`           // minute-by-minute alert on what intruders change
 	AlertLoadPerCPU  int    `yaml:"alert_load_per_cpu"` // sustained load/CPU % to warn at (default 90)
 	AlertDiskPercent int    `yaml:"alert_disk_percent"` // root fs usage % to warn at (default 85)
 
@@ -101,6 +106,7 @@ func Default() Config {
 		Username:          "deploy",
 		AdminKeySource:    AdminKeyPaste,
 		GitHubKeyComment:  "deploy@server",
+		CaddyRepo:         DefaultCaddyRepo,
 		Timezone:          "UTC",
 		SwapGB:            2,
 		SSHPort:           22,
@@ -119,6 +125,7 @@ func Default() Config {
 		TailscaleSSH:      true,
 		EnableAlerts:      false,
 		AlertOnSSHLogin:   true,
+		Tripwire:          true,
 		AlertLoadPerCPU:   90,
 		AlertDiskPercent:  85,
 	}
@@ -232,6 +239,11 @@ func (c Config) Validate() error {
 			return errors.New("portainer_access tailnet needs install_tailscale")
 		}
 	}
+	if c.CaddyRepo != "" {
+		if err := ValidGitHubRepo(c.CaddyRepo); err != nil {
+			return fmt.Errorf("caddy_repo %q: %w", c.CaddyRepo, err)
+		}
+	}
 	for _, r := range c.GitHubRepos {
 		if err := ValidGitHubRepo(r); err != nil {
 			return fmt.Errorf("github_repos %q: %w", r, err)
@@ -250,6 +262,9 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
+
+// DefaultCaddyRepo is the author's shared Caddy setup, offered by the wizard.
+const DefaultCaddyRepo = "MR-Studio-KZ-UA/caddy-core"
 
 // StatePath is where a provisioning run keeps its answers (secrets excluded),
 // so later commands — `forge tailscale`, `forge github` — act on the same

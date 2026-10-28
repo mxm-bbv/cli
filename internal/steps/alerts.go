@@ -131,6 +131,39 @@ func alertsStep() Step {
 	}
 }
 
+// tripwireStep schedules `forge tripwire` every minute. It runs last so its
+// baseline is the finished server, not forge's own work in progress.
+func tripwireStep() Step {
+	return Step{
+		Name: "Tripwire: alert on what intruders change",
+		Skip: func(c *Context) bool { return !c.Cfg.EnableAlerts || !c.Cfg.Tripwire },
+		Run: func(c *Context) error {
+			self, err := os.Executable()
+			if err != nil || self == "" {
+				self = "/usr/local/bin/forge"
+			}
+			if err := system.WriteFile("/etc/systemd/system/forge-tripwire.service", fmt.Sprintf(tripwireUnit, self), 0o644); err != nil {
+				return err
+			}
+			if err := system.WriteFile("/etc/systemd/system/forge-tripwire.timer", tripwireTimer, 0o644); err != nil {
+				return err
+			}
+			if _, err := system.Run("systemctl", "daemon-reload"); err != nil {
+				return err
+			}
+			// Baseline after the unit files exist, or they'd be the first alert.
+			if _, err := system.Run(self, "tripwire", "--baseline"); err != nil {
+				return err
+			}
+			if _, err := system.Run("systemctl", "enable", "--now", "forge-tripwire.timer"); err != nil {
+				return err
+			}
+			c.Notes = append(c.Notes, "Tripwire armed: new SSH keys, users, sudo rights, open ports, services, cron jobs or SUID files reach Telegram within a minute (see the current state: sudo forge tripwire --show)")
+			return nil
+		},
+	}
+}
+
 // pamLoginHookLine is appended to /etc/pam.d/sshd. "optional" means a missing
 // or failing script can never affect authentication or the session — PAM
 // ignores an optional module's result when required modules are present.
@@ -290,6 +323,31 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/lib/forge/audit-notify.sh
+`
+
+// tripwireUnit: %s is the forge binary. Low priority — it must never compete
+// with the services it watches.
+const tripwireUnit = `[Unit]
+Description=forge tripwire (Telegram alert on persistence changes)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%s tripwire
+Nice=10
+IOSchedulingClass=idle
+`
+
+const tripwireTimer = `[Unit]
+Description=Run forge tripwire every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
 `
 
 const auditTimer = `[Unit]

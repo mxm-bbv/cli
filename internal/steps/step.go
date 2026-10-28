@@ -47,13 +47,15 @@ func BuildSteps(cfg config.Config) ([]Step, *Context) {
 		tailscaleStep(), // before portainer: the agent binds to the tailnet IP
 		portainerStep(),
 		watchtowerStep(),
+		caddyStep(), // web server on :80/:443 (your caddy repo)
 		firewallStep(),
 		fail2banStep(),
 		dockerUserFirewallStep(), // containers must respect the firewall too
 		sysctlStep(),
 		autoUpdatesStep(),
 		alertsStep(),       // detection: Telegram push for audit/health/logins
-		sshHardeningStep(), // last: closes root / password login
+		sshHardeningStep(), // closes root / password login
+		tripwireStep(),     // last: its baseline is the finished server
 	}
 	return steps, c
 }
@@ -66,6 +68,12 @@ func TailscaleSteps(cfg config.Config) ([]Step, *Context) {
 	agent := portainerStep()
 	agent.Skip = func(c *Context) bool { return !tailnetAgent(c.Cfg) }
 	return []Step{tailscaleStep(), agent}, c
+}
+
+// CaddySteps installs the caddy repo (with a deploy key if it is private).
+func CaddySteps(cfg config.Config) ([]Step, *Context) {
+	cfg.GitHubRepos = nil
+	return []Step{githubStep(), caddyStep()}, &Context{Cfg: cfg}
 }
 
 // GitHubSteps gives cfg.Username read-only deploy keys for cfg.GitHubRepos.
