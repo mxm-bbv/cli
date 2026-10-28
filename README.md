@@ -86,13 +86,29 @@ sudo forge
 Binaries are published automatically by GitHub Actions when a version tag is
 pushed (`git tag v0.1.0 && git push origin v0.1.0`), so you never build by hand.
 
-## Build from source (optional)
+## Build & run from your machine
+
+Only **Docker** is required — without a local Go toolchain, every `make`
+target builds inside `golang:1.27` (output owned by you, caches in `.cache/`).
+Run `make` to list all targets.
 
 ```bash
-make build            # -> ./forge for this platform
-make build-linux      # -> dist/forge-linux-{amd64,arm64}
-sudo ./forge
+make try                                   # click through the wizard in a throwaway Ubuntu container — changes nothing
+make try DISTRO=debian:13                  # …or on another release
+
+make deploy HOST=root@203.0.113.10         # build for the server's CPU, copy over SSH, verify sha256, run the wizard
+make deploy HOST=ubuntu@srv ARGS=--dry-run # any forge arguments via ARGS (audit, status, --config …)
+make deploy HOST=deploy@srv SSH_PORT=2222 SSH_OPTS="-i ~/.ssh/id_vps -o IdentitiesOnly=yes"
+
+make dist                                  # dist/forge-linux-{amd64,arm64} + checksums.txt
+make build                                 # ./forge for this machine
+make test                                  # unit tests;  make test-distros: real steps in Ubuntu/Debian containers
 ```
+
+`make deploy` uses one multiplexed SSH connection (one password/passphrase
+prompt), installs the binary as `/usr/local/bin/forge` (via `sudo` when you
+log in as a regular user) and hands the wizard your terminal. Keep that
+session open until you've checked the new SSH login, as usual.
 
 The wizard walks you through the deploy user, your SSH key, GitHub key,
 features and hardening, shows a confirmation, then executes with a live
@@ -147,6 +163,7 @@ for the full picture. In short:
 ## Layout
 
 ```
+scripts/deploy.sh       `make deploy`: build for the server's arch, scp, verify, run
 main.go                 entrypoint: flags, checks, banner, wizard → runner
 internal/config         Config struct + YAML load/save (password excluded)
 internal/system         shell exec wrappers (dry-run aware) + host facts
