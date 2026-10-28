@@ -8,7 +8,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"rsc.io/qr"
 
@@ -123,33 +122,49 @@ func TestDoubleCtrlCToAbort(t *testing.T) {
 	}
 }
 
-// TestFormFitsShortTerminal: when a later group is taller than the terminal,
-// huh sizes every group to the terminal height and renders one line more, so
-// the focused field's title scrolled out of sight. The form must fit, title
-// included.
-func TestFormFitsShortTerminal(t *testing.T) {
-	for _, h := range []int{12, 16, 20} {
+// TestWizardFitsTerminal: the wizard runs on the alternate screen and fits
+// any terminal — header, page title and the focused field's title included —
+// even when a later page is taller than the window.
+func TestWizardFitsTerminal(t *testing.T) {
+	for _, size := range [][2]int{{80, 12}, {80, 24}, {60, 16}, {120, 40}} {
 		var a, b string
 		var c [8]bool
 		tall := make([]huh.Field, len(c))
 		for i := range c {
 			tall[i] = huh.NewConfirm().Title("Question?").Value(&c[i])
 		}
-		f := newForm(
-			huh.NewGroup(
-				huh.NewInput().Title("Password for the deploy user").Value(&a),
+		w := newWizard(
+			page{title: "Deploy user's password", fields: []huh.Field{
+				huh.NewInput().Title("Password").Value(&a),
 				huh.NewInput().Title("Confirm password").Value(&b),
-			),
-			huh.NewGroup(tall...),
+			}},
+			page{title: "Many questions", fields: tall},
 		)
-		f.Init()
-		f.Update(fitHeight(nil, tea.WindowSizeMsg{Width: 80, Height: h}))
-		view := f.View()
-		if got := lipgloss.Height(view); got > h {
-			t.Errorf("height %d: form renders %d lines", h, got)
+		w.Init()
+		m, _ := w.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+		w = m.(wizard)
+		v := w.View()
+		if !v.AltScreen {
+			t.Fatal("the wizard must draw on the alternate screen")
 		}
-		if !strings.Contains(view, "Password for the deploy user") {
-			t.Errorf("height %d: focused field's title is missing:\n%s", h, view)
+		view := w.render()
+		lines := strings.Split(view, "\n")
+		if len(lines) > size[1] {
+			t.Errorf("%dx%d: %d lines", size[0], size[1], len(lines))
+		}
+		for _, l := range lines {
+			if ansi.StringWidth(l) >= size[0] {
+				t.Errorf("%dx%d: line reaches the last column: %q", size[0], size[1], ansi.Strip(l))
+			}
+		}
+		want := []string{"◆ forge", "1 / 2", "Deploy user's password", "Password"}
+		if size[1] >= 16 { // a tiny window scrolls to the next field instead
+			want = append(want, "Confirm password")
+		}
+		for _, want := range want {
+			if !strings.Contains(ansi.Strip(view), want) {
+				t.Errorf("%dx%d: %q missing:\n%s", size[0], size[1], want, ansi.Strip(view))
+			}
 		}
 	}
 }

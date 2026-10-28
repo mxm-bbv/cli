@@ -23,6 +23,7 @@ import (
 var version = "dev"
 
 func main() {
+	ui.Brand = "forge " + version
 	// Subcommands are dispatched before flag parsing so they can take their own
 	// arguments. The wizard is the default when no subcommand is given.
 	if len(os.Args) > 1 {
@@ -104,6 +105,7 @@ func main() {
 		ui.Println(ui.StyleWarn.Render("  [dry-run] not root — that's fine, nothing will be executed.\n"))
 	}
 	if platErr == nil {
+		ui.Platform = plat.String()
 		ui.Println(ui.StyleMuted.Render("  Detected: " + plat.String()))
 		if note := plat.SupportNote(); note != "" {
 			ui.Println(ui.StyleWarn.Render("  ⚠ " + note))
