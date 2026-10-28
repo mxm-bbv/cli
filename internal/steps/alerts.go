@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/system"
 )
 
@@ -20,7 +21,9 @@ const (
 	notifyPath      = "/usr/local/lib/forge/notify.sh"
 	healthPath      = "/usr/local/lib/forge/health-check.sh"
 	auditNotifyPath = "/usr/local/lib/forge/audit-notify.sh"
-	sshrcPath       = "/etc/ssh/sshrc"
+	loginNotifyPath = "/usr/local/lib/forge/ssh-login-notify.sh"
+	pamSSHDPath     = "/etc/pam.d/sshd"
+	sshrcPath       = "/etc/ssh/sshrc" // pre-0.2 login hook, migrated away
 )
 
 func alertsStep() Step {
@@ -33,6 +36,16 @@ func alertsStep() Step {
 				if _, err := system.Run("install", "-m", "0755", "-d", d); err != nil {
 					return err
 				}
+			}
+
+			// alerts.env is sourced by root-run shell scripts, so a value with
+			// $(…) or a newline would execute as root. Only accept the shapes
+			// Telegram actually issues.
+			if err := config.ValidTelegramToken(cfg.TelegramBotToken); err != nil {
+				return err
+			}
+			if err := config.ValidTelegramChatID(cfg.AlertsChatID); err != nil {
+				return err
 			}
 
 			// Secret config, root-only. WriteFile logs the path, never the body,
@@ -60,6 +73,7 @@ func alertsStep() Step {
 				notifyPath:      notifyScript,
 				healthPath:      healthScript,
 				auditNotifyPath: fmt.Sprintf(auditNotifyScript, self),
+				loginNotifyPath: loginNotifyScript,
 			}
 			for path, body := range files {
 				if err := system.WriteFile(path, body, 0o755); err != nil {
@@ -88,11 +102,18 @@ func alertsStep() Step {
 				}
 			}
 
-			// SSH-login alert via /etc/ssh/sshrc — safer than editing PAM: a
-			// failure here can never lock anyone out, and it is backgrounded.
+			// SSH-login alert via pam_exec (runs as root, so it can read the
+			// root-only alerts.env — the old /etc/ssh/sshrc hook ran as the
+			// logging-in user and never fired for non-root logins).
+			if err := removeLegacySSHRC(); err != nil {
+				return err
+			}
 			if cfg.AlertOnSSHLogin {
-				if err := installSSHRC(); err != nil {
+				if err := installPAMLoginHook(); err != nil {
 					return err
+				}
+				if cfg.TailscaleSSH {
+					c.Notes = append(c.Notes, "Tailscale SSH sessions bypass sshd/PAM — they don't trigger login alerts (see the Tailscale admin console's logs)")
 				}
 			}
 
@@ -110,37 +131,84 @@ func alertsStep() Step {
 	}
 }
 
-// installSSHRC appends the forge login-alert block to /etc/ssh/sshrc exactly
-// once, preserving any existing content.
-func installSSHRC() error {
+// pamLoginHookLine is appended to /etc/pam.d/sshd. "optional" means a missing
+// or failing script can never affect authentication or the session — PAM
+// ignores an optional module's result when required modules are present.
+const pamLoginHookLine = "session optional pam_exec.so quiet " + loginNotifyPath
+
+// installPAMLoginHook adds the forge login hook to sshd's PAM stack exactly
+// once (forge's sshd policy sets UsePAM yes).
+func installPAMLoginHook() error {
 	const marker = "# forge-ssh-login-alert"
-	if system.FileContains(sshrcPath, marker) {
+	if system.FileContains(pamSSHDPath, marker) {
 		return nil
 	}
-	existing, err := readFileOrEmpty(sshrcPath)
+	existing, err := readFileOrEmpty(pamSSHDPath)
 	if err != nil {
+		return err
+	}
+	if existing == "" && !system.DryRun {
+		return fmt.Errorf("%s not found — is openssh-server installed?", pamSSHDPath)
+	}
+	if err := system.BackupFile(pamSSHDPath); err != nil {
 		return err
 	}
 	if existing != "" && !strings.HasSuffix(existing, "\n") {
 		existing += "\n"
 	}
-	return system.WriteFile(sshrcPath, existing+sshrcBlock, 0o644)
+	return system.WriteFile(pamSSHDPath, existing+marker+"\n"+pamLoginHookLine+"\n", 0o644)
 }
+
+// removeLegacySSHRC strips the hook older forge versions put in
+// /etc/ssh/sshrc (deleting the file if nothing else is left — its mere
+// existence disables sshd's built-in xauth handling).
+func removeLegacySSHRC() error {
+	existing, err := readFileOrEmpty(sshrcPath)
+	if err != nil || !strings.Contains(existing, legacySSHRCBlock) {
+		return err
+	}
+	rest := strings.Replace(existing, legacySSHRCBlock, "", 1)
+	if strings.TrimSpace(rest) == "" {
+		return system.RemoveFile(sshrcPath)
+	}
+	return system.WriteFile(sshrcPath, rest, 0o644)
+}
+
+// The scripts below test alerts.env before sourcing it: in sh, "." of a missing
+// file is a special-builtin error that aborts the script (exit 2), so the
+// tempting ". file || exit 0" never reaches its "|| exit 0".
 
 // notifyScript reads a message from $1 (or stdin) and pushes it to Telegram.
 // --data-urlencode keeps arbitrary text safe — no JSON escaping, no injection.
+// The bot token is part of the URL, so the URL goes to curl as a config file
+// on stdin (`-K -`, fed by the printf builtin) instead of argv, which any local
+// user could read from /proc while curl runs.
 const notifyScript = `#!/bin/sh
 # Managed by forge. Sends its argument (or stdin) to Telegram.
 set -u
-. /etc/forge/alerts.env 2>/dev/null || exit 0
+[ -r /etc/forge/alerts.env ] || exit 0
+. /etc/forge/alerts.env
 [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || exit 0
 [ -n "${TELEGRAM_CHAT_ID:-}" ] || exit 0
 if [ $# -gt 0 ]; then MSG="$1"; else MSG="$(cat)"; fi
-curl -fsS --max-time 15 -X POST \
-  "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-  --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-  --data-urlencode "text=${MSG}" \
-  -d disable_web_page_preview=true >/dev/null
+printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOKEN" |
+  curl -fsS --max-time 15 -X POST -K - \
+    --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+    --data-urlencode "text=${MSG}" \
+    -d disable_web_page_preview=true >/dev/null
+`
+
+// loginNotifyScript is run by pam_exec (as root) for every sshd session. It
+// returns immediately — the notification is sent in the background so a slow
+// network can never delay a login.
+const loginNotifyScript = `#!/bin/sh
+# Managed by forge. Called by pam_exec from /etc/pam.d/sshd.
+[ "${PAM_TYPE:-}" = "open_session" ] || exit 0
+[ -r /etc/forge/alerts.env ] || exit 0
+. /etc/forge/alerts.env
+[ "${ALERT_SSH_LOGIN:-0}" = "1" ] || exit 0
+/usr/local/lib/forge/notify.sh "🔐 SSH login: ${PAM_USER:-?}@$(hostname) from ${PAM_RHOST:-?}" </dev/null >/dev/null 2>&1 &
+exit 0
 `
 
 // healthScript warns on sustained load, disk pressure and pending reboots,
@@ -149,7 +217,8 @@ curl -fsS --max-time 15 -X POST \
 const healthScript = `#!/bin/sh
 # Managed by forge. Host-health checks with per-alert cooldown.
 set -u
-. /etc/forge/alerts.env 2>/dev/null || exit 0
+[ -r /etc/forge/alerts.env ] || exit 0
+. /etc/forge/alerts.env
 STATE=/var/lib/forge/state
 mkdir -p "$STATE"
 fresh() { f="$STATE/$1"; [ -f "$f" ] && [ -z "$(find "$f" -mmin +"$2" 2>/dev/null)" ]; }
@@ -184,7 +253,8 @@ CODE=$?
 $OUT"
 `
 
-const sshrcBlock = `# forge-ssh-login-alert
+// legacySSHRCBlock is the exact hook forge < 0.2 appended to /etc/ssh/sshrc.
+const legacySSHRCBlock = `# forge-ssh-login-alert
 if [ -r /etc/forge/alerts.env ] && [ -x /usr/local/lib/forge/notify.sh ]; then
   ( . /etc/forge/alerts.env 2>/dev/null
     [ "${ALERT_SSH_LOGIN:-0}" = "1" ] && \

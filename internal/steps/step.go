@@ -1,16 +1,21 @@
 // Package steps defines the ordered, idempotent provisioning steps.
 package steps
 
-import "github.com/mxm-bbv/cli/internal/config"
+import (
+	"github.com/mxm-bbv/cli/internal/config"
+	"github.com/mxm-bbv/cli/internal/system"
+)
 
 // Context carries the config plus artifacts produced during a run (surfaced in
 // the final summary).
 type Context struct {
 	Cfg               config.Config
-	GitHubPubKey      string // populated by the ssh step when a key is generated
-	AdminKeyInstalled bool   // true once a valid authorized_keys exists for the deploy user
-	TailnetIP         string // populated by the tailscale step
-	AgentSecret       string // AGENT_SECRET for pairing the Portainer Agent (shown once)
+	Platform          system.Platform // detected by preflight (upstream family/codename)
+	Container         string          // container type when running in LXC/OpenVZ/…, else ""
+	GitHubPubKey      string          // populated by the ssh step when a key is generated
+	AdminKeyInstalled bool            // true once a valid authorized_keys exists for the deploy user
+	TailnetIP         string          // populated by the tailscale step
+	AgentSecret       string          // AGENT_SECRET for pairing the Portainer Agent (shown once)
 	Notes             []string
 }
 
@@ -49,3 +54,16 @@ func BuildSteps(cfg config.Config) ([]Step, *Context) {
 }
 
 func always(*Context) bool { return false }
+
+// platform returns the detected platform, detecting it on demand when a step
+// runs without preflight (tests, a skipped preflight).
+func (c *Context) platform() (system.Platform, error) {
+	if c.Platform.Family != "" {
+		return c.Platform, nil
+	}
+	p, err := system.DetectPlatform(hostOSRelease())
+	if err == nil {
+		c.Platform = p
+	}
+	return p, err
+}

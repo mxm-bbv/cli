@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/system"
 )
 
@@ -36,19 +37,18 @@ const (
 	// The agent version must stay in lockstep with your Portainer Server
 	// (same major.minor, server not older) — bump both together.
 	portainerAgentImage = "portainer/agent:2.39.1"
-	watchtowerImage     = "containrrr/watchtower:1.7.1"
+
+	// Watchtower: the maintained fork. Upstream containrrr/watchtower was
+	// archived in Dec 2025 and its last image (1.7.1) speaks Docker API 1.25,
+	// which Docker Engine 29+ rejects ("client version 1.25 is too old") — it
+	// crash-loops on any fresh install. The fork keeps the same flags.
+	watchtowerImage = "nickfedor/watchtower:1.23.2"
 )
 
-// usernameRe restricts the deploy username to a POSIX- and shell-safe set.
-var usernameRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
-
-// ValidUsername reports whether name is a safe Linux username.
-func ValidUsername(name string) error {
-	if !usernameRe.MatchString(name) {
-		return errors.New("must be lowercase, start with a letter/underscore, and contain only a-z 0-9 _ - (max 32)")
-	}
-	return nil
-}
+// ValidUsername reports whether name is a safe Linux username. The username
+// flows into exec arguments throughout the steps, so this is a security
+// boundary, not just input hygiene.
+func ValidUsername(name string) error { return config.ValidUsername(name) }
 
 // githubUserRe follows GitHub's username rules (alphanumeric plus hyphens).
 var githubUserRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)

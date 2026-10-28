@@ -1,5 +1,5 @@
 // Command forge — ServerForge: a TUI wizard that turns a clean Ubuntu/Debian
-// box into a production-ready host (Docker, Portainer Agent, deploy user, SSH
+// box (or a derivative such as Linux Mint) into a production-ready host (Docker, Portainer Agent, deploy user, SSH
 // keys and hardening) in a single pass.
 package main
 
@@ -21,7 +21,8 @@ import (
 	"github.com/mxm-bbv/cli/internal/update"
 )
 
-const version = "0.1.1"
+// version is stamped at build time: -ldflags "-X main.version=v1.2.3".
+var version = "dev"
 
 func main() {
 	// Subcommands are dispatched before flag parsing so they can take their own
@@ -75,18 +76,33 @@ func main() {
 
 	fmt.Print(ui.Banner(version))
 
-	// Privilege & OS checks.
+	// Privilege & OS checks — before the wizard, so nobody fills it in on a
+	// box forge can't provision.
+	plat, platErr := system.DetectPlatform(system.ReadOSRelease())
 	if !*dryRun {
 		if !system.IsRoot() {
 			fmt.Println(ui.StyleErr.Render("  This must run as root. Try:  sudo forge"))
 			os.Exit(1)
 		}
-		if rel := system.ReadOSRelease(); !rel.IsDebianLike() {
-			fmt.Println(ui.StyleErr.Render("  Unsupported OS: " + rel.Pretty + " (Ubuntu/Debian only)"))
+		if platErr != nil {
+			fmt.Println(ui.StyleErr.Render("  " + platErr.Error()))
+			os.Exit(1)
+		}
+		if !system.HasSystemd() {
+			fmt.Println(ui.StyleErr.Render("  systemd is not running — forge needs it to manage services, timers and sshd."))
 			os.Exit(1)
 		}
 	} else if !system.IsRoot() {
 		fmt.Println(ui.StyleWarn.Render("  [dry-run] not root — that's fine, nothing will be executed.\n"))
+	}
+	if platErr == nil {
+		fmt.Println(ui.StyleMuted.Render("  Detected: " + plat.String()))
+		if note := plat.SupportNote(); note != "" {
+			fmt.Println(ui.StyleWarn.Render("  ⚠ " + note))
+		}
+		fmt.Println()
+	} else {
+		fmt.Println(ui.StyleWarn.Render("  [dry-run] " + platErr.Error() + "\n"))
 	}
 
 	// Gather configuration: either replay a file or run the full wizard.
@@ -181,11 +197,18 @@ func gatherConfig(cfgPath string) (config.Config, error) {
 			if err != nil {
 				return cfg, err
 			}
+			if err := config.ValidTelegramToken(tok); err != nil {
+				return cfg, err
+			}
 			cfg.TelegramBotToken = tok
 		}
 		return cfg, nil
 	}
-	return ui.RunForm(config.Default(), true)
+	cfg, err := ui.RunForm(config.Default(), true)
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, cfg.Validate()
 }
 
 func confirmTitle(cfg config.Config, dryRun bool) string {

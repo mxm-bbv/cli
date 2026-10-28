@@ -115,9 +115,18 @@ func watchtowerStep() Step {
 	return Step{
 		Name: "Watchtower (monitor-only update checks)",
 		Skip: func(c *Context) bool {
-			return !c.Cfg.InstallWatchtower || containerExists("watchtower")
+			return !c.Cfg.InstallWatchtower ||
+				(containerExists("watchtower") && runningImage("watchtower") == watchtowerImage)
 		},
 		Run: func(c *Context) error {
+			// An existing container on another image (e.g. the archived
+			// containrrr/watchtower, which crash-loops on Docker 29+) is
+			// replaced, not kept.
+			if containerExists("watchtower") {
+				if _, err := system.Run("docker", "rm", "-f", "watchtower"); err != nil {
+					return err
+				}
+			}
 			if err := runWatchtowerContainer(); err != nil {
 				return err
 			}

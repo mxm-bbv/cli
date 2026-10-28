@@ -153,6 +153,14 @@ func tail(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// Output runs a read-only query command and returns its trimmed stdout. Like
+// the other read-only helpers it runs even in dry-run and is not recorded in
+// CommandLog — it must never be used for anything that changes the host.
+func Output(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
 // CommandExists reports whether a binary is on PATH.
 func CommandExists(name string) bool {
 	_, err := exec.LookPath(name)
@@ -190,6 +198,18 @@ func WriteFile(path, content string, mode os.FileMode) error {
 		return nil
 	}
 	return os.WriteFile(path, []byte(content), mode)
+}
+
+// RemoveFile deletes a file if it exists. Honours dry-run.
+func RemoveFile(path string) error {
+	CommandLog = append(CommandLog, "remove "+path)
+	if DryRun {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // BackupFile copies path to path.bak if no backup exists yet.
