@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"rsc.io/qr"
 
@@ -118,5 +120,36 @@ func TestDoubleCtrlCToAbort(t *testing.T) {
 	m = next.(RunnerModel)
 	if !m.Failed || cmd == nil {
 		t.Fatal("second ctrl+c must abort")
+	}
+}
+
+// TestFormFitsShortTerminal: when a later group is taller than the terminal,
+// huh sizes every group to the terminal height and renders one line more, so
+// the focused field's title scrolled out of sight. The form must fit, title
+// included.
+func TestFormFitsShortTerminal(t *testing.T) {
+	for _, h := range []int{12, 16, 20} {
+		var a, b string
+		var c [8]bool
+		tall := make([]huh.Field, len(c))
+		for i := range c {
+			tall[i] = huh.NewConfirm().Title("Question?").Value(&c[i])
+		}
+		f := newForm(
+			huh.NewGroup(
+				huh.NewInput().Title("Password for the deploy user").Value(&a),
+				huh.NewInput().Title("Confirm password").Value(&b),
+			),
+			huh.NewGroup(tall...),
+		)
+		f.Init()
+		f.Update(fitHeight(nil, tea.WindowSizeMsg{Width: 80, Height: h}))
+		view := f.View()
+		if got := lipgloss.Height(view); got > h {
+			t.Errorf("height %d: form renders %d lines", h, got)
+		}
+		if !strings.Contains(view, "Password for the deploy user") {
+			t.Errorf("height %d: focused field's title is missing:\n%s", h, view)
+		}
 	}
 }
