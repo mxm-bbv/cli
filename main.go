@@ -45,7 +45,9 @@ func main() {
 		case "ssh":
 			os.Exit(runSSH(os.Args[2:]))
 		case "agent-secret":
-			os.Exit(runAgentSecret())
+			os.Exit(runAgentSecret(os.Args[2:]))
+		case "rotate-agents":
+			os.Exit(runRotateAgents(os.Args[2:]))
 		case "tripwire":
 			os.Exit(runTripwire(os.Args[2:]))
 		case "tailscale":
@@ -250,6 +252,8 @@ func runningContainers() int {
 const usage = `  forge                      set up a fresh server (wizard)
   sudo forge tailscale       log in to Tailscale, start the Portainer Agent on it
   sudo forge agent-secret    switch the Portainer Agent to your shared AGENT_SECRET
+  forge rotate-agents [--portainer DIR] [user@host …]
+                             red button: new AGENT_SECRET on every server + your Portainer
   sudo forge github o/r …    read-only deploy keys for GitHub repos
   sudo forge caddy [o/r]     install/update the Caddy web server
   sudo forge ssh [tailnet-only|public]

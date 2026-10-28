@@ -147,6 +147,9 @@ func installTailscale(p system.Platform) error {
 	return aptInstall("tailscale")
 }
 
+// TailnetUp reports whether this box is logged in to Tailscale.
+func TailnetUp() bool { return tailscaleUp() }
+
 // tailscaleUp reports whether the box is already joined and running.
 func tailscaleUp() bool {
 	if system.DryRun {
