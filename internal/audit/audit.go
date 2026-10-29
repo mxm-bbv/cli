@@ -5,6 +5,7 @@
 package audit
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,14 @@ const (
 	sevCrit
 )
 
+// Finding is one check's result, as `forge audit --json` reports it.
+type Finding struct {
+	Severity string `json:"severity"` // ok, info, warn, crit
+	Message  string `json:"message"`
+}
+
+var severityNames = map[severity]string{sevOK: "ok", sevInfo: "info", sevWarn: "warn", sevCrit: "crit"}
+
 type report struct {
 	warns, crits int
 	// compromised is set only by the IOC checks (rootkit, malware artifacts,
@@ -31,9 +40,22 @@ type report struct {
 	// quiet suppresses OK/info lines and colour, so the output is a clean plain
 	// list of findings suitable for a Telegram message (used by `--quiet`).
 	quiet bool
+	// collect keeps every result instead of printing it (`--json`).
+	collect  bool
+	findings []Finding
 }
 
 func (r *report) line(sev severity, msg string) {
+	if r.collect {
+		switch sev {
+		case sevWarn:
+			r.warns++
+		case sevCrit:
+			r.crits++
+		}
+		r.findings = append(r.findings, Finding{Severity: severityNames[sev], Message: msg})
+		return
+	}
 	if r.quiet {
 		switch sev {
 		case sevWarn:
@@ -111,6 +133,38 @@ func Run(quiet bool) int {
 		ui.Println(ui.StyleOK.Render("  No indicators of compromise or risky exposure found."))
 		return 0
 	}
+}
+
+// JSON is `forge audit --json`: every check's result for a program to read
+// (deploy.me over ssh), with the same exit code as Run.
+type JSON struct {
+	V           int       `json:"v"`
+	Crits       int       `json:"crits"`
+	Warns       int       `json:"warns"`
+	Compromised bool      `json:"compromised"`
+	Root        bool      `json:"root"` // without root some checks are incomplete
+	Findings    []Finding `json:"findings"`
+}
+
+// RunJSON runs every check and prints the results as one JSON object.
+func RunJSON() int {
+	r := &report{collect: true}
+	checkRootkit(r)
+	checkIOCPaths(r)
+	checkPersistence(r)
+	checkContainers(r)
+	checkFirewall(r)
+	checkAuthorizedKeys(r)
+
+	out, _ := json.Marshal(JSON{V: 1, Crits: r.crits, Warns: r.warns, Compromised: r.compromised, Root: os.Geteuid() == 0, Findings: r.findings})
+	fmt.Println(string(out))
+	switch {
+	case r.crits > 0:
+		return 2
+	case r.warns > 0:
+		return 1
+	}
+	return 0
 }
 
 // --- rootkit & IOC checks (from the incident report) ---

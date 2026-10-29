@@ -63,12 +63,18 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `forge lint <compose.yml>` | Static-check a Compose file **before** deploy for the same risky settings |
 | `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
 | `sudo forge agent-secret` | Switch this server's Portainer Agent to your shared `AGENT_SECRET` (asked hidden). A Portainer Server takes one secret for all agents — start it with `-e AGENT_SECRET=…` and use the same one on every server (also the wizard field, or `PORTAINER_AGENT_SECRET=…`) |
+| `forge rotate-agents [--portainer DIR] [user@host …]` | **Red button** for a lost/leaked `AGENT_SECRET`, run where your Portainer Server lives: a new secret goes to every server's agent over SSH (stdin only — never a command line), then into `DIR/.env`, and Portainer restarts with it. Servers and DIR are remembered; unreachable servers are listed with the fix |
+| `sudo forge agent-remove` | Take the Portainer Agent off this server — the container, its `AGENT_SECRET` and port 9001 in the container firewall — once its containers are managed over SSH instead (deploy.me). `sudo forge agent-secret` brings it back. `--yes` skips the question |
 | `sudo forge tailscale` | Log in to Tailscale (QR code) and start the tailnet-only Portainer Agent. Safe to re-run |
 | `sudo forge github owner/repo …` | Add read-only deploy keys for more repos (one-time code on your phone) |
 | `sudo forge caddy [owner/repo]` | Install or update the Caddy web server from your repo |
 | `sudo forge ssh tailnet-only` | **Optional**: close SSH to the internet, so only Tailscale reaches it. Refuses unless you're connected over Tailscale right now and the node key never expires; `sudo forge ssh public` reopens it, `sudo forge ssh` shows the state |
 | `sudo forge tripwire --show` | What the tripwire watches right now (`--baseline` re-records it) |
 | `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |
+| `forge modules --json` | **Machine mode** (for deploy.me or any program over SSH): the catalog of modules — what each does, whether it changes access or waits for a person, its inputs |
+| `sudo forge run <module>` | Runs one module with its inputs as JSON on the first line of stdin (`{"inputs": {…}}`, so secrets never reach a command line); reports as `::forge::{json}` lines: steps, login links and codes to act on, the result |
+| `forge status --json` / `forge audit --json` | The same facts and checks as one JSON object |
+| `sudo forge machine enable [user]` | Lets the deploy user run the four commands above without a password (`/etc/sudoers.d/forge-machine`, checked with `visudo`); refuses unless the forge binary and its folder are root's alone. `disable` removes it |
 
 Every step is **idempotent** — re-running skips what's already done. SSH
 hardening always runs **last**, so the box stays reachable until everything

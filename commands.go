@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
 
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
@@ -17,6 +21,9 @@ import (
 // runSteps drives steps in the live runner and reports whether they all
 // succeeded (a failure has been reported to the operator already).
 func runSteps(st []steps.Step, ctx *steps.Context, logPath string) bool {
+	if !term.IsTerminal(os.Stdout.Fd()) {
+		return runStepsPlain(st, ctx, logPath)
+	}
 	final, err := tea.NewProgram(ui.NewRunner(st, ctx, logPath)).Run()
 	// An abort leaves the current step's goroutine behind: stop a login it may
 	// still be waiting on, and drop its temporary credentials.
@@ -32,6 +39,48 @@ func runSteps(st []steps.Step, ctx *steps.Context, logPath string) bool {
 		return false
 	}
 	// What forge just changed is not an intrusion.
+	if !system.DryRun && tripwire.Installed() {
+		tripwire.Run(true)
+	}
+	return true
+}
+
+// runStepsPlain runs steps without the live view — over `ssh host forge …`
+// with no terminal (rotate-agents) — printing one line per step and any
+// operator action (a login link) as it appears.
+func runStepsPlain(st []steps.Step, ctx *steps.Context, logPath string) bool {
+	defer system.StopWaiting()
+	defer steps.Cleanup()
+	for _, s := range st {
+		if s.Skip != nil && s.Skip(ctx) {
+			fmt.Println("  ○  " + s.Name + "  · skipped")
+			continue
+		}
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx) }()
+		tick := time.NewTicker(500 * time.Millisecond)
+		shown := ""
+		var err error
+	wait:
+		for {
+			select {
+			case err = <-done:
+				break wait
+			case <-tick.C:
+				if a := system.CurrentAttention(); a != nil && a.URL+a.Code != shown {
+					shown = a.URL + a.Code
+					fmt.Println("  ▶  " + a.Title + ": " + a.URL + " " + a.Code)
+				}
+			}
+		}
+		tick.Stop()
+		if err != nil {
+			fmt.Println("  ✗  " + s.Name + ": " + err.Error())
+			fmt.Println("  Full log: " + logPath)
+			return false
+		}
+		fmt.Println("  ✓  " + s.Name)
+	}
 	if !system.DryRun && tripwire.Installed() {
 		tripwire.Run(true)
 	}
@@ -133,12 +182,23 @@ func rememberSSHTailnetOnly(on bool) {
 
 // runAgentSecret switches this box's Portainer Agent to the shared
 // AGENT_SECRET (asked for hidden, never on the command line).
-func runAgentSecret() int {
+//
+// With --stdin the secret is the first line of stdin — how rotate-agents
+// hands it over SSH without it ever appearing on a command line.
+func runAgentSecret(args []string) int {
 	if !requireRoot("agent-secret") {
 		return 1
 	}
-	secret, err := ui.AskSecret("AGENT_SECRET of your Portainer Server")
-	if err != nil {
+	var secret string
+	var err error
+	if len(args) > 0 && args[0] == "--stdin" {
+		secret, err = bufio.NewReader(os.Stdin).ReadString('\n')
+		secret = strings.TrimSpace(secret)
+		if err != nil && secret == "" {
+			ui.Println(ui.StyleErr.Render("  agent-secret --stdin: no secret on stdin"))
+			return 2
+		}
+	} else if secret, err = ui.AskSecret("AGENT_SECRET of your Portainer Server"); err != nil {
 		return 1
 	}
 	if secret == "" {
@@ -149,9 +209,16 @@ func runAgentSecret() int {
 		ui.Println(ui.StyleErr.Render("  AGENT_SECRET: " + err.Error()))
 		return 2
 	}
+	if len(args) > 0 && args[0] == "--stdin" && !steps.TailnetUp() {
+		// Nobody could see a login link over a non-interactive SSH session.
+		ui.Println(ui.StyleErr.Render("  this server isn't logged in to Tailscale — run  sudo forge tailscale  on it first"))
+		return 1
+	}
 	cfg, _ := loadState()
 	cfg.AgentSecret = secret
-	cfg.InstallTailscale = true
+	// The agent rides the tailnet, whatever it did before: a public one is
+	// exactly what a rotation must not leave behind.
+	cfg.InstallTailscale, cfg.InstallPortainer, cfg.PortainerAccess = true, true, config.PortainerTailnet
 	logPath := openLog(false)
 	st, ctx := steps.TailscaleSteps(cfg)
 	if !runSteps(st, ctx, logPath) {
@@ -159,6 +226,45 @@ func runAgentSecret() int {
 	}
 	ui.Println("\n" + ui.Report("Portainer Agent uses the shared secret", ctx, logPath))
 	return 0
+}
+
+// runAgentRemove takes the Portainer Agent off this box for good: its
+// containers are managed over SSH now (deploy.me). forge never starts it
+// again; `forge agent-secret` brings it back.
+func runAgentRemove(args []string) int {
+	if !requireRoot("agent-remove") {
+		return 1
+	}
+	if len(args) > 0 && args[0] != "--yes" {
+		ui.Println(ui.StyleErr.Render("  usage: sudo forge agent-remove [--yes]"))
+		return 2
+	}
+	if len(args) == 0 {
+		ok, err := ui.Confirm("Remove the Portainer Agent from this server?",
+			"Portainer loses this environment. forge forgets its AGENT_SECRET and closes :9001 in the container firewall.\nsudo forge agent-secret brings it back.")
+		if err != nil || !ok {
+			ui.Println(ui.StyleMuted.Render("  Nothing changed."))
+			return 0
+		}
+	}
+	cfg, _ := loadState()
+	logPath := openLog(false)
+	st, ctx := steps.RemoveAgentSteps(cfg)
+	if !runSteps(st, ctx, logPath) {
+		return 1
+	}
+	rememberAgentRemoved()
+	ui.Println("\n" + ui.Report("Portainer Agent removed", ctx, logPath))
+	return 0
+}
+
+// rememberAgentRemoved keeps forge from starting the agent again (tailscale,
+// update images) on a box it provisioned.
+func rememberAgentRemoved() {
+	if cfg, ok := loadState(); ok {
+		cfg.InstallPortainer = false
+		_ = saveState(cfg)
+	}
 }
 
 // runTripwire is what the forge-tripwire timer runs every minute.
