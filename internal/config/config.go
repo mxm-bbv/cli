@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/mxm-bbv/cli/internal/alerts"
 )
 
 // PortainerAccess selects how the Portainer Agent is reachable. A publicly
@@ -87,12 +89,19 @@ type Config struct {
 	// Telegram alerts: a daily audit sweep, host-health thresholds, and SSH
 	// logins are pushed to a Telegram chat. The bot token is a secret and is
 	// never serialised; the chat ID is not sensitive.
-	EnableAlerts     bool   `yaml:"enable_alerts"`
-	AlertsChatID     string `yaml:"alerts_chat_id"`
-	AlertOnSSHLogin  bool   `yaml:"alert_on_ssh_login"`
-	Tripwire         bool   `yaml:"tripwire"`           // minute-by-minute alert on what intruders change
-	AlertLoadPerCPU  int    `yaml:"alert_load_per_cpu"` // sustained load/CPU % to warn at (default 90)
-	AlertDiskPercent int    `yaml:"alert_disk_percent"` // root fs usage % to warn at (default 85)
+	EnableAlerts    bool   `yaml:"enable_alerts"`
+	AlertsChatID    string `yaml:"alerts_chat_id"`
+	AlertOnSSHLogin bool   `yaml:"alert_on_ssh_login"`
+	// AlertLogins says which SSH logins are worth a message: new (a user's
+	// first from an address in a day, the rest in the daily summary), all or
+	// off; "" follows alert_on_ssh_login. AlertQuietFrom's logins (IPs or
+	// networks) only count in the summary; AlertName starts every message.
+	AlertLogins      string   `yaml:"alert_logins,omitempty"`
+	AlertQuietFrom   []string `yaml:"alert_quiet_from,omitempty"`
+	AlertName        string   `yaml:"alert_name,omitempty"`
+	Tripwire         bool     `yaml:"tripwire"`           // minute-by-minute alert on what intruders change
+	AlertLoadPerCPU  int      `yaml:"alert_load_per_cpu"` // sustained load/CPU % to warn at (default 90)
+	AlertDiskPercent int      `yaml:"alert_disk_percent"` // root fs usage % to warn at (default 85)
 
 	// Runtime-only (not serialised)
 	DeployPassword   string `yaml:"-"`
@@ -263,6 +272,40 @@ func (c Config) Validate() error {
 		if err := ValidTelegramChatID(c.AlertsChatID); err != nil {
 			return fmt.Errorf("alerts_chat_id %q: %w", c.AlertsChatID, err)
 		}
+		if err := ValidAlertName(c.AlertName); err != nil {
+			return fmt.Errorf("alert_name %q: %w", c.AlertName, err)
+		}
+		switch c.AlertLogins {
+		case "", alerts.LoginsNew, alerts.LoginsAll, alerts.LoginsOff:
+		default:
+			return fmt.Errorf("alert_logins %q: must be new, all or off", c.AlertLogins)
+		}
+		if _, err := alerts.ParseQuiet(strings.Join(c.AlertQuietFrom, " ")); err != nil {
+			return fmt.Errorf("alert_quiet_from: %w", err)
+		}
+	}
+	return nil
+}
+
+// LoginAlerts is which SSH logins are worth a message: new, all or off.
+func (c Config) LoginAlerts() string {
+	if c.AlertLogins != "" {
+		return c.AlertLogins
+	}
+	if c.AlertOnSSHLogin {
+		return alerts.LoginsNew
+	}
+	return alerts.LoginsOff
+}
+
+// alertNameRe: what alerts.env can hold in single quotes and a shell can
+// source safely — no quote, no newline, no $ or backtick.
+var alertNameRe = regexp.MustCompile(`^[\p{L}\p{N} ._()#+-]{0,40}$`)
+
+// ValidAlertName checks the name every alert starts with ("" = the hostname).
+func ValidAlertName(name string) error {
+	if !alertNameRe.MatchString(name) {
+		return errors.New("up to 40 letters, digits, spaces and . _ ( ) # + -")
 	}
 	return nil
 }

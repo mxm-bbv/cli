@@ -150,7 +150,7 @@ func TestLiveInContainer(t *testing.T) {
 		if err := os.MkdirAll(forgeLibDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(loginNotifyPath, []byte(loginNotifyScript), 0o755); err != nil {
+		if err := os.WriteFile(loginNotifyPath, []byte(withForge(loginNotifyScript, "/bin/true")), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		cmd := exec.Command(loginNotifyPath)

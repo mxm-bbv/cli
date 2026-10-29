@@ -31,6 +31,7 @@ import (
 
 	"github.com/charmbracelet/x/term"
 
+	"github.com/mxm-bbv/cli/internal/alerts"
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/system"
@@ -208,6 +209,41 @@ var modules = []module{
 		},
 	},
 	{
+		Name:        "alerts",
+		Title:       "Telegram alerts",
+		Description: "Where this server's alerts go and which SSH logins are worth a message: a user's first from an address each day (the rest go to a daily summary), every one, or none. Logins from quiet addresses only count in the summary, and more than 12 alerts in an hour wait for it too — never the tripwire or the audit.",
+		Danger:      true, // it can mute what would tell you about an intruder
+		Inputs: []moduleInput{
+			{Name: "token", Type: "secret", Label: "Bot token", Help: "from @BotFather; empty keeps the bot this server has"},
+			{Name: "chat", Type: "text", Label: "Chat ID", Help: "a number (-100… for a group) or @channel; empty keeps this server's"},
+			{Name: "name", Type: "text", Label: "Name in messages", Help: "every alert starts with it; empty: the hostname"},
+			{Name: "logins", Type: "choice", Label: "SSH logins", Options: []string{alerts.LoginsNew, alerts.LoginsAll, alerts.LoginsOff}},
+			{Name: "quiet", Type: "text", Label: "Quiet addresses", Help: "IPs or networks whose logins only count in the summary, e.g. 203.0.113.7 100.64.0.0/10"},
+		},
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			cfg, err := alertsConfig(in)
+			if err != nil {
+				return nil, nil, err
+			}
+			st, ctx := steps.AlertsSteps(cfg)
+			return st, ctx, nil
+		},
+		after: func(in map[string]string) {
+			cfg, err := alertsConfig(in)
+			if err != nil {
+				return
+			}
+			saved, ok := loadState()
+			if !ok {
+				return
+			}
+			saved.EnableAlerts, saved.AlertsChatID = true, cfg.AlertsChatID
+			saved.AlertName, saved.AlertLogins, saved.AlertQuietFrom = cfg.AlertName, cfg.AlertLogins, cfg.AlertQuietFrom
+			saved.AlertOnSSHLogin = cfg.AlertLogins != alerts.LoginsOff
+			_ = saveState(saved)
+		},
+	},
+	{
 		Name:        "update-images",
 		Title:       "Re-pull forge's pinned images",
 		Description: "Pulls the Portainer Agent and Watchtower at the versions this forge pins, and recreates the ones that drifted.",
@@ -233,6 +269,54 @@ var modules = []module{
 			}), &steps.Context{}, nil
 		},
 	},
+}
+
+// alertsConfig is the alerts module's inputs over what the server has: an
+// empty token or chat keeps the server's own, so a program can change the
+// name or the quiet list without handing the bot around again.
+func alertsConfig(in map[string]string) (config.Config, error) {
+	cfg, _ := loadState()
+	cur := alerts.ReadEnv()
+	cfg.TelegramBotToken = firstOf(in["token"], cur["TELEGRAM_BOT_TOKEN"])
+	cfg.AlertsChatID = firstOf(in["chat"], cur["TELEGRAM_CHAT_ID"], cfg.AlertsChatID)
+	if cfg.TelegramBotToken == "" || cfg.AlertsChatID == "" {
+		return cfg, errors.New("this server has no Telegram bot yet: give the bot token and the chat ID")
+	}
+	if err := config.ValidTelegramToken(cfg.TelegramBotToken); err != nil {
+		return cfg, err
+	}
+	if err := config.ValidTelegramChatID(cfg.AlertsChatID); err != nil {
+		return cfg, err
+	}
+	if err := config.ValidAlertName(in["name"]); err != nil {
+		return cfg, fmt.Errorf("name: %w", err)
+	}
+	cfg.AlertName = in["name"]
+	cfg.AlertLogins = alerts.LoginsNew
+	switch {
+	case in["logins"] != "":
+		cfg.AlertLogins = in["logins"]
+	case cur != nil:
+		cfg.AlertLogins = alerts.LoginMode(cur["ALERT_SSH_LOGIN"])
+	}
+	quiet, err := alerts.ParseQuiet(in["quiet"])
+	if err != nil {
+		return cfg, err
+	}
+	cfg.AlertQuietFrom = nil
+	for _, p := range quiet {
+		cfg.AlertQuietFrom = append(cfg.AlertQuietFrom, p.String())
+	}
+	return cfg, nil
+}
+
+func firstOf(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func findModule(name string) *module {

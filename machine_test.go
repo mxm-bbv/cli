@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mxm-bbv/cli/internal/alerts"
 	"github.com/mxm-bbv/cli/internal/steps"
 )
 
@@ -32,7 +33,7 @@ func TestModulesCatalog(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"tailscale", "agent-secret", "agent-remove", "github", "caddy", "ssh", "tripwire-baseline", "update"} {
+	for _, name := range []string{"tailscale", "agent-secret", "agent-remove", "github", "caddy", "ssh", "tripwire-baseline", "alerts", "update"} {
 		if !seen[name] {
 			t.Errorf("module %s missing", name)
 		}
@@ -152,5 +153,46 @@ func TestRootOnly(t *testing.T) {
 	}
 	if err := rootOnly(file); err == nil {
 		t.Error("a folder anyone can write to passed as root-only")
+	}
+}
+
+// The alerts module changes the name, the logins said and the quiet list
+// without handing the bot around again, and refuses what alerts.env, sourced
+// by root's scripts, must never hold.
+func TestAlertsModuleKeepsTheServersBot(t *testing.T) {
+	prev := alerts.EnvPath
+	alerts.EnvPath = filepath.Join(t.TempDir(), "alerts.env")
+	t.Cleanup(func() { alerts.EnvPath = prev })
+
+	if _, err := alertsConfig(map[string]string{"name": "Votonia"}); err == nil || !strings.Contains(err.Error(), "no Telegram bot yet") {
+		t.Fatalf("a server with no bot: %v", err)
+	}
+
+	const token = "123456789:AAexampleexampleexampleexampleexample"
+	if err := os.WriteFile(alerts.EnvPath, []byte("TELEGRAM_BOT_TOKEN="+token+"\nTELEGRAM_CHAT_ID=42\nALERT_SSH_LOGIN=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := alertsConfig(map[string]string{"name": "Votonia VPS", "quiet": "2.135.53.39, 100.64.0.0/10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TelegramBotToken != token || cfg.AlertsChatID != "42" || cfg.AlertName != "Votonia VPS" ||
+		cfg.AlertLogins != alerts.LoginsNew || strings.Join(cfg.AlertQuietFrom, " ") != "2.135.53.39/32 100.64.0.0/10" {
+		t.Fatalf("got %+v", cfg)
+	}
+	if cfg, _ := alertsConfig(map[string]string{"logins": "off"}); cfg.AlertLogins != alerts.LoginsOff {
+		t.Fatalf("logins off: %q", cfg.AlertLogins)
+	}
+
+	for _, in := range []map[string]string{
+		{"name": "x'; reboot; '"},
+		{"name": "$(id)"},
+		{"quiet": "$(id)"},
+		{"token": "not-a-token"},
+		{"chat": "42; rm -rf /"},
+	} {
+		if _, err := alertsConfig(in); err == nil {
+			t.Errorf("%v accepted", in)
+		}
 	}
 }

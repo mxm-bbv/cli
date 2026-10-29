@@ -43,7 +43,7 @@ func fakeHost(t *testing.T) (root string, sent *[]string) {
 	listen := "tcp LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=1,fd=3))\n" +
 		"tcp LISTEN 0 4096 127.0.0.1:631 0.0.0.0:* users:((\"cupsd\",pid=2,fd=3))\n" +
 		"udp UNCONN 0 0 0.0.0.0:41641 0.0.0.0:* users:((\"tailscaled\",pid=3,fd=3))\n"
-	prevRoot, prevState, prevNotify, prevOutput, prevHost, prevNow := Root, StatePath, notify, output, hostname, now
+	prevRoot, prevState, prevNotify, prevOutput, prevNow := Root, StatePath, notify, output, now
 	Root, StatePath = root, filepath.Join(root, "/var/lib/forge/tripwire.json")
 	var msgs []string
 	notify = func(m string) error { msgs = append(msgs, m); return nil }
@@ -58,11 +58,10 @@ func fakeHost(t *testing.T) (root string, sent *[]string) {
 		}
 		return ""
 	}
-	hostname = func() string { return "web-01" }
 	clock := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	now = func() time.Time { clock = clock.Add(time.Minute); return clock }
 	t.Cleanup(func() {
-		Root, StatePath, notify, output, hostname, now = prevRoot, prevState, prevNotify, prevOutput, prevHost, prevNow
+		Root, StatePath, notify, output, now = prevRoot, prevState, prevNotify, prevOutput, prevNow
 	})
 	return root, &msgs
 }
@@ -95,7 +94,7 @@ func TestTripwireReportsPersistence(t *testing.T) {
 	}
 	msg := (*sent)[0]
 	for _, want := range []string{
-		"web-01",
+		"🚨 Changes of the kind intruders make",
 		"+ SSH key: root: ssh-ed25519 SHA256:",
 		"x@evil [command=\"/tmp/.x\"]",
 		"+ cron job: /etc/cron.d/sync",

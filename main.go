@@ -40,6 +40,8 @@ func main() {
 				os.Exit(status.RunJSON(version))
 			}
 			os.Exit(status.Run())
+		case "alert":
+			os.Exit(runAlert(os.Args[2:]))
 		case "modules":
 			os.Exit(runModules(os.Args[2:]))
 		case "run":
