@@ -234,6 +234,46 @@ func PinnedImages() (agent, watchtower string) {
 }
 
 // containerExists reports whether a container with the given name is present.
+// RemoveAgentSteps takes the Portainer Agent off the server, for a box whose
+// containers are managed over SSH instead (deploy.me): the container, the
+// AGENT_SECRET forge kept for it, and port 9001 in the container firewall when
+// it was let through there. The firewall is only rewritten where forge set it
+// up before: a box it didn't provision gets no new rules from this.
+func RemoveAgentSteps(cfg config.Config) ([]Step, *Context) {
+	cfg.InstallPortainer = false
+	return []Step{
+		{
+			Name: "Portainer Agent removed",
+			Skip: func(*Context) bool { return !containerExists("portainer_agent") },
+			Run: func(c *Context) error {
+				if _, err := system.Run("docker", "rm", "-f", "portainer_agent"); err != nil {
+					return err
+				}
+				c.Notes = append(c.Notes, "Portainer Agent removed: nothing listens on :9001 any more")
+				return nil
+			},
+		},
+		{
+			Name: "Its AGENT_SECRET forgotten",
+			Skip: func(*Context) bool { return storedAgentSecret() == "" },
+			Run: func(*Context) error {
+				if err := os.Remove(agentEnvPath); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				return nil
+			},
+		},
+		{
+			Name: "Port 9001 closed in the container firewall",
+			Skip: func(*Context) bool {
+				script, err := os.ReadFile(dockerUserScriptPath)
+				return !cfg.EnableFirewall || err != nil || !strings.Contains(string(script), "9001")
+			},
+			Run: dockerUserFirewallStep().Run,
+		},
+	}, &Context{Cfg: cfg}
+}
+
 func containerExists(name string) bool {
 	if system.DryRun {
 		return false

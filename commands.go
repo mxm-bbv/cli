@@ -228,6 +228,45 @@ func runAgentSecret(args []string) int {
 	return 0
 }
 
+// runAgentRemove takes the Portainer Agent off this box for good: its
+// containers are managed over SSH now (deploy.me). forge never starts it
+// again; `forge agent-secret` brings it back.
+func runAgentRemove(args []string) int {
+	if !requireRoot("agent-remove") {
+		return 1
+	}
+	if len(args) > 0 && args[0] != "--yes" {
+		ui.Println(ui.StyleErr.Render("  usage: sudo forge agent-remove [--yes]"))
+		return 2
+	}
+	if len(args) == 0 {
+		ok, err := ui.Confirm("Remove the Portainer Agent from this server?",
+			"Portainer loses this environment. forge forgets its AGENT_SECRET and closes :9001 in the container firewall.\nsudo forge agent-secret brings it back.")
+		if err != nil || !ok {
+			ui.Println(ui.StyleMuted.Render("  Nothing changed."))
+			return 0
+		}
+	}
+	cfg, _ := loadState()
+	logPath := openLog(false)
+	st, ctx := steps.RemoveAgentSteps(cfg)
+	if !runSteps(st, ctx, logPath) {
+		return 1
+	}
+	rememberAgentRemoved()
+	ui.Println("\n" + ui.Report("Portainer Agent removed", ctx, logPath))
+	return 0
+}
+
+// rememberAgentRemoved keeps forge from starting the agent again (tailscale,
+// update images) on a box it provisioned.
+func rememberAgentRemoved() {
+	if cfg, ok := loadState(); ok {
+		cfg.InstallPortainer = false
+		_ = saveState(cfg)
+	}
+}
+
 // runTripwire is what the forge-tripwire timer runs every minute.
 func runTripwire(args []string) int {
 	if !requireRoot("tripwire") {

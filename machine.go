@@ -107,6 +107,18 @@ var modules = []module{
 		},
 	},
 	{
+		Name:        "agent-remove",
+		Title:       "Remove the Portainer Agent",
+		Description: "Takes the Portainer Agent off the server — its container, the AGENT_SECRET forge kept and port 9001 in the container firewall — for a server whose containers are managed over SSH instead. forge never starts it again; agent-secret brings it back.",
+		Danger:      true,
+		build: func(map[string]string) ([]steps.Step, *steps.Context, error) {
+			cfg, _ := loadState()
+			st, ctx := steps.RemoveAgentSteps(cfg)
+			return st, ctx, nil
+		},
+		after: func(map[string]string) { rememberAgentRemoved() },
+	},
+	{
 		Name:        "github",
 		Title:       "GitHub deploy keys",
 		Description: "Gives the deploy user a read-only deploy key for each repository, registered through the GitHub API: approve once with a one-time code. git clone git@github.com:owner/repo.git then works on the server.",

@@ -58,6 +58,8 @@ func main() {
 			os.Exit(runSSH(os.Args[2:]))
 		case "agent-secret":
 			os.Exit(runAgentSecret(os.Args[2:]))
+		case "agent-remove":
+			os.Exit(runAgentRemove(os.Args[2:]))
 		case "rotate-agents":
 			os.Exit(runRotateAgents(os.Args[2:]))
 		case "tripwire":
@@ -264,6 +266,7 @@ func runningContainers() int {
 const usage = `  forge                      set up a fresh server (wizard)
   sudo forge tailscale       log in to Tailscale, start the Portainer Agent on it
   sudo forge agent-secret    switch the Portainer Agent to your shared AGENT_SECRET
+  sudo forge agent-remove    take the Portainer Agent off this server (containers managed over SSH instead)
   forge rotate-agents [--portainer DIR] [user@host …]
                              red button: new AGENT_SECRET on every server + your Portainer
   sudo forge github o/r …    read-only deploy keys for GitHub repos
