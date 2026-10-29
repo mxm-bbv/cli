@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mxm-bbv/cli/internal/alerts"
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/tripwire"
@@ -42,9 +43,17 @@ type Report struct {
 	} `json:"firewall"`
 	SSHTailnetOnly bool     `json:"ssh_tailnet_only"`
 	Alerts         []string `json:"alerts"` // the alert timers that run
-	NextAudit      string   `json:"next_audit"`
-	Tripwire       bool     `json:"tripwire"`
-	Swap           bool     `json:"swap"`
+	// Alerting is where alerts go and which logins are said (forge ≥ 0.6;
+	// readable as root only, like alerts.env).
+	Alerting struct {
+		Configured bool     `json:"configured"`
+		Name       string   `json:"name"`
+		Logins     string   `json:"logins"`
+		Quiet      []string `json:"quiet"`
+	} `json:"alerting"`
+	NextAudit string `json:"next_audit"`
+	Tripwire  bool   `json:"tripwire"`
+	Swap      bool   `json:"swap"`
 }
 
 // Collect gathers the report. It changes nothing.
@@ -81,6 +90,13 @@ func Collect(version string) Report {
 	}
 	if len(r.Alerts) > 0 {
 		r.NextAudit = nextAudit()
+	}
+	r.Alerting.Quiet = []string{}
+	if set, ok := alerts.Load(); ok {
+		r.Alerting.Configured, r.Alerting.Name, r.Alerting.Logins = set.Configured, set.Name, set.Logins
+		for _, p := range set.Quiet {
+			r.Alerting.Quiet = append(r.Alerting.Quiet, p.String())
+		}
 	}
 	r.Tripwire = tripwire.Installed()
 	r.Swap = strings.TrimSpace(cmd("swapon", "--show")) != ""

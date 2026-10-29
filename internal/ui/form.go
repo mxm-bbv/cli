@@ -174,7 +174,9 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 				huh.NewInput().Title("Bot token").
 					EchoMode(huh.EchoModePassword).Value(&cfg.TelegramBotToken).Validate(config.ValidTelegramToken),
 				huh.NewInput().Title("Chat ID").Value(&cfg.AlertsChatID).Validate(config.ValidTelegramChatID),
-				huh.NewConfirm().Title("Alert on every SSH login?").Value(&cfg.AlertOnSSHLogin),
+				huh.NewConfirm().Title("Tell me about SSH logins?").
+					Description("A user's first login from an address each day; the rest go to a daily summary.").
+					Value(&cfg.AlertOnSSHLogin),
 				huh.NewConfirm().Title("Tripwire: alert within a minute on what intruders change?").
 					Description("New SSH keys, users, sudo rights, open ports, services, cron jobs, SUID files…").
 					Value(&cfg.Tripwire),

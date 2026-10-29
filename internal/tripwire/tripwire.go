@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/mxm-bbv/cli/internal/alerts"
 )
 
 // Snapshot maps a category to its sorted entries.
@@ -40,13 +42,12 @@ type state struct {
 var (
 	Root      = "/"
 	StatePath = "/var/lib/forge/tripwire.json"
-	notify    = func(msg string) error { return exec.Command("/usr/local/lib/forge/notify.sh", msg).Run() }
+	notify    = func(msg string) error { return alerts.Send(alerts.Alert{Text: msg, Urgent: true}) }
 	output    = func(name string, args ...string) string {
 		out, _ := exec.Command(name, args...).Output()
 		return string(out)
 	}
-	hostname = func() string { h, _ := os.Hostname(); return h }
-	now      = time.Now
+	now = time.Now
 )
 
 // suidEvery spaces out the full-filesystem SUID scan; the rest is cheap.
@@ -87,7 +88,7 @@ func Run(baseline bool) int {
 	if len(changes) == 0 {
 		return saveOrFail(cur)
 	}
-	if err := notify(Report(hostname(), changes)); err != nil {
+	if err := notify(Report(changes)); err != nil {
 		// Keep the old baseline: the next run retries the alert.
 		fmt.Fprintln(os.Stderr, "tripwire: alert not sent:", err)
 		return 1
@@ -115,12 +116,12 @@ func Diff(old, cur Snapshot) []string {
 }
 
 // Report formats changes as a Telegram message (kept under its 4096 limit).
-func Report(host string, changes []string) string {
+func Report(changes []string) string {
 	body := strings.Join(changes, "\n")
 	if len(body) > 3300 {
 		body = body[:3300] + "\n… (more — see `sudo forge tripwire --show`)"
 	}
-	return "🚨 " + host + ": changes of the kind intruders make\n\n" + body +
+	return "🚨 Changes of the kind intruders make\n\n" + body +
 		"\n\nYou did this? Then ignore it — it won't be reported again.\n" +
 		"Not you? Run  sudo forge audit  and consider rebuilding the server from a snapshot."
 }

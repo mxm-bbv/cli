@@ -111,7 +111,12 @@ deliberate, reviewable act.
   `session optional pam_exec.so` — as root, so it can read the 0600 env file
   (the former `/etc/ssh/sshrc` hook ran as the logging-in user and never fired
   for non-root logins). `optional` plus a script that backgrounds the push and
-  exits immediately means it can never block or delay a login.
+  exits immediately means it can never block or delay a login. The name and the
+  quiet-address list are single-quoted in `alerts.env` and can't hold a quote,
+  `$` or a backtick. What is worth a message is decided by `forge alert` (Go,
+  under a file lock): the hourly limit never holds back the tripwire or the
+  audit, so a flood of logins from new addresses can't push the one alert that
+  matters into the next day's summary.
 - **No command injection** — the deploy username is validated against a strict
   regex (`ValidUsername`) before it flows into any command, the GitHub username
   for key fetching is regex-validated, and both use `exec` (no shell). Secrets

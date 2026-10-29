@@ -2,9 +2,11 @@ package steps
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 
+	"github.com/mxm-bbv/cli/internal/alerts"
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/system"
 )
@@ -12,7 +14,9 @@ import (
 // Telegram alerts turn the box into something that tells you when it is in
 // trouble — the missing "detection" half of the incident (malware ran for
 // months at 100% CPU before anyone noticed). Everything here is push-only over
-// HTTPS to api.telegram.org; nothing listens.
+// HTTPS to api.telegram.org; nothing listens. What is worth a message, and how
+// often, is decided in Go (internal/alerts, through `forge alert`): the shell
+// scripts below only notice things.
 
 const (
 	forgeLibDir     = "/usr/local/lib/forge"
@@ -48,17 +52,17 @@ func alertsStep() Step {
 				return err
 			}
 
+			if err := config.ValidAlertName(cfg.AlertName); err != nil {
+				return fmt.Errorf("the name in alerts: %w", err)
+			}
+			quiet, err := alerts.ParseQuiet(strings.Join(cfg.AlertQuietFrom, " "))
+			if err != nil {
+				return err
+			}
+
 			// Secret config, root-only. WriteFile logs the path, never the body,
 			// so the bot token can't leak into the command log.
-			sshLogin := "0"
-			if cfg.AlertOnSSHLogin {
-				sshLogin = "1"
-			}
-			env := fmt.Sprintf(
-				"TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nALERT_SSH_LOGIN=%s\nALERT_LOAD_PCT=%d\nALERT_DISK_PCT=%d\n",
-				cfg.TelegramBotToken, cfg.AlertsChatID, sshLogin, cfg.AlertLoadPerCPU, cfg.AlertDiskPercent,
-			)
-			if err := system.WriteFile(alertsEnvPath, env, 0o600); err != nil {
+			if err := system.WriteFile(alertsEnvPath, alertsEnv(cfg, quiet), 0o600); err != nil {
 				return err
 			}
 
@@ -71,9 +75,9 @@ func alertsStep() Step {
 
 			files := map[string]string{
 				notifyPath:      notifyScript,
-				healthPath:      healthScript,
-				auditNotifyPath: fmt.Sprintf(auditNotifyScript, self),
-				loginNotifyPath: loginNotifyScript,
+				healthPath:      withForge(healthScript, self),
+				auditNotifyPath: withForge(auditNotifyScript, self),
+				loginNotifyPath: withForge(loginNotifyScript, self),
 			}
 			for path, body := range files {
 				if err := system.WriteFile(path, body, 0o755); err != nil {
@@ -108,7 +112,7 @@ func alertsStep() Step {
 			if err := removeLegacySSHRC(); err != nil {
 				return err
 			}
-			if cfg.AlertOnSSHLogin {
+			if cfg.LoginAlerts() != alerts.LoginsOff {
 				if err := installPAMLoginHook(); err != nil {
 					return err
 				}
@@ -118,17 +122,57 @@ func alertsStep() Step {
 			}
 
 			// Prove it end-to-end so a wrong token/chat-id surfaces now.
+			said := loginsSaid(cfg.LoginAlerts(), len(quiet))
 			if !system.DryRun {
-				if _, err := system.Run("sh", notifyPath,
-					"✅ forge: alerts configured on "+system.Hostname()+". You'll get a daily audit summary, health warnings and SSH-login notices here."); err != nil {
+				if err := alerts.Send(alerts.Alert{Text: "✅ forge: alerts are set. Here: the daily audit, health warnings, the tripwire, " + said + "."}); err != nil {
 					c.Notes = append(c.Notes, "⚠ alerts installed but the Telegram test message failed — check the bot token and chat ID in "+alertsEnvPath)
 					return nil
 				}
 			}
-			c.Notes = append(c.Notes, "Telegram alerts active: daily audit, health checks every 15 min, SSH-login notices. Sent a test message.")
+			c.Notes = append(c.Notes, "Telegram alerts active: daily audit, health checks every 15 min, "+said+"; more than "+fmt.Sprint(alerts.DefaultMaxPerHour)+" an hour wait for a daily summary. Sent a test message.")
 			return nil
 		},
 	}
+}
+
+// AlertsSteps sets up (or changes) Telegram alerts on their own: the machine
+// mode's alerts module.
+func AlertsSteps(cfg config.Config) ([]Step, *Context) {
+	cfg.EnableAlerts = true
+	return []Step{alertsStep()}, &Context{Cfg: cfg}
+}
+
+// alertsEnv is /etc/forge/alerts.env. The shell scripts source it as root, so
+// every value is a shape that can't run anything: the token and chat ID are
+// checked against what Telegram issues, the name and the quiet list are single
+// quoted and can't hold a quote.
+func alertsEnv(cfg config.Config, quiet []netip.Prefix) string {
+	nets := make([]string, len(quiet))
+	for i, p := range quiet {
+		nets[i] = p.String()
+	}
+	return fmt.Sprintf("TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\nALERT_NAME='%s'\nALERT_SSH_LOGIN=%s\nALERT_QUIET_FROM='%s'\nALERT_MAX_PER_HOUR=%d\nALERT_LOAD_PCT=%d\nALERT_DISK_PCT=%d\n",
+		cfg.TelegramBotToken, cfg.AlertsChatID, cfg.AlertName, cfg.LoginAlerts(), strings.Join(nets, " "),
+		alerts.DefaultMaxPerHour, cfg.AlertLoadPerCPU, cfg.AlertDiskPercent)
+}
+
+// loginsSaid tells what reaches the chat about SSH logins.
+func loginsSaid(mode string, quiet int) string {
+	said := map[string]string{
+		alerts.LoginsNew: "a user's first SSH login from an address each day (the rest in a daily summary)",
+		alerts.LoginsAll: "every SSH login",
+		alerts.LoginsOff: "no SSH logins",
+	}[mode]
+	if quiet > 0 && mode != alerts.LoginsOff {
+		said += fmt.Sprintf(", logins from %d quiet address(es) only in the summary", quiet)
+	}
+	return said
+}
+
+// withForge puts the absolute path of this forge binary into a script, so the
+// scheduled checks work regardless of PATH.
+func withForge(script, self string) string {
+	return strings.ReplaceAll(script, "@FORGE@", self)
 }
 
 // tripwireStep schedules `forge tripwire` every minute. It runs last so its
@@ -232,57 +276,54 @@ printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TELEGRAM_BOT_TOK
 `
 
 // loginNotifyScript is run by pam_exec (as root) for every sshd session. It
-// returns immediately — the notification is sent in the background so a slow
-// network can never delay a login.
+// returns immediately — `forge alert login` runs in the background, so a slow
+// network can never delay a login — and that decides whether the login is
+// worth a message (PAM_USER and PAM_RHOST come in the environment).
 const loginNotifyScript = `#!/bin/sh
 # Managed by forge. Called by pam_exec from /etc/pam.d/sshd.
 [ "${PAM_TYPE:-}" = "open_session" ] || exit 0
 [ -r /etc/forge/alerts.env ] || exit 0
-. /etc/forge/alerts.env
-[ "${ALERT_SSH_LOGIN:-0}" = "1" ] || exit 0
-/usr/local/lib/forge/notify.sh "🔐 SSH login: ${PAM_USER:-?}@$(hostname) from ${PAM_RHOST:-?}" </dev/null >/dev/null 2>&1 &
+@FORGE@ alert login </dev/null >/dev/null 2>&1 &
 exit 0
 `
 
-// healthScript warns on sustained load, disk pressure and pending reboots,
-// each rate-limited by a state file so a standing condition alerts once, not
-// every 15 minutes.
+// healthScript warns on sustained load, disk pressure and pending reboots.
+// `forge alert` keeps a standing condition from repeating (6 h for load and
+// disk, a day for a reboot), and sends the daily summary of what it held back.
 const healthScript = `#!/bin/sh
-# Managed by forge. Host-health checks with per-alert cooldown.
+# Managed by forge. Host-health checks every 15 minutes.
 set -u
 [ -r /etc/forge/alerts.env ] || exit 0
 . /etc/forge/alerts.env
-STATE=/var/lib/forge/state
-mkdir -p "$STATE"
-fresh() { f="$STATE/$1"; [ -f "$f" ] && [ -z "$(find "$f" -mmin +"$2" 2>/dev/null)" ]; }
-notify() { /usr/local/lib/forge/notify.sh "$1"; touch "$STATE/$2"; }
 
 CPUS=$(nproc 2>/dev/null || echo 1)
 LOAD15=$(awk '{print $3}' /proc/loadavg)
 PCT=$(awk -v l="$LOAD15" -v c="$CPUS" 'BEGIN{printf "%d",(l/c)*100}')
-if [ "$PCT" -ge "${ALERT_LOAD_PCT:-90}" ] && ! fresh load 360; then
-  notify "⚠️ $(hostname): sustained load ${LOAD15} (${PCT}% of ${CPUS} CPUs) — check 'docker stats' / 'top'" load
+if [ "$PCT" -ge "${ALERT_LOAD_PCT:-90}" ]; then
+  @FORGE@ alert send --key load --every 6h "⚠️ sustained load ${LOAD15} (${PCT}% of ${CPUS} CPUs) — check 'docker stats' / 'top'"
 fi
 
 DISK=$(df -P / | awk 'NR==2{gsub(/%/,"",$5);print $5}')
-if [ "$DISK" -ge "${ALERT_DISK_PCT:-85}" ] && ! fresh disk 360; then
-  notify "⚠️ $(hostname): root filesystem ${DISK}% full" disk
+if [ "$DISK" -ge "${ALERT_DISK_PCT:-85}" ]; then
+  @FORGE@ alert send --key disk --every 6h "⚠️ root filesystem ${DISK}% full"
 fi
 
-if [ -f /var/run/reboot-required ] && ! fresh reboot 1440; then
-  notify "🔄 $(hostname): reboot required (security updates pending)" reboot
+if [ -f /var/run/reboot-required ]; then
+  @FORGE@ alert send --key reboot --every 24h "🔄 reboot required (security updates pending)"
 fi
+
+@FORGE@ alert digest
 `
 
 // auditNotifyScript runs `forge audit --quiet` and pushes only when it finds
-// something. %s is the absolute path of the forge binary.
+// something.
 const auditNotifyScript = `#!/bin/sh
 # Managed by forge. Daily compromise/exposure sweep -> Telegram on findings.
 set -u
-OUT=$(%s audit --quiet 2>/dev/null)
+OUT=$(@FORGE@ audit --quiet 2>/dev/null)
 CODE=$?
 [ "$CODE" -eq 0 ] && exit 0
-/usr/local/lib/forge/notify.sh "🚨 $(hostname): forge audit found issues (severity $CODE):
+@FORGE@ alert send --urgent --key audit --every 12h "🚨 forge audit found issues (severity $CODE):
 $OUT"
 `
 
