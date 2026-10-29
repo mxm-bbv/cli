@@ -64,6 +64,7 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `sudo forge update` | Self-update the binary — verifies **minisign signature + SHA256**, fails closed |
 | `sudo forge agent-secret` | Switch this server's Portainer Agent to your shared `AGENT_SECRET` (asked hidden). A Portainer Server takes one secret for all agents — start it with `-e AGENT_SECRET=…` and use the same one on every server (also the wizard field, or `PORTAINER_AGENT_SECRET=…`) |
 | `forge rotate-agents [--portainer DIR] [user@host …]` | **Red button** for a lost/leaked `AGENT_SECRET`, run where your Portainer Server lives: a new secret goes to every server's agent over SSH (stdin only — never a command line), then into `DIR/.env`, and Portainer restarts with it. Servers and DIR are remembered; unreachable servers are listed with the fix |
+| `sudo forge agent-remove` | Take the Portainer Agent off this server — the container, its `AGENT_SECRET` and port 9001 in the container firewall — once its containers are managed over SSH instead (deploy.me). `sudo forge agent-secret` brings it back. `--yes` skips the question |
 | `sudo forge tailscale` | Log in to Tailscale (QR code) and start the tailnet-only Portainer Agent. Safe to re-run |
 | `sudo forge github owner/repo …` | Add read-only deploy keys for more repos (one-time code on your phone) |
 | `sudo forge caddy [owner/repo]` | Install or update the Caddy web server from your repo |
