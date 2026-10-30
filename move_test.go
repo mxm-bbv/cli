@@ -196,6 +196,48 @@ func TestMoveModulesRefuseBadInputs(t *testing.T) {
 	}
 }
 
+func TestMoveRemove(t *testing.T) {
+	remove := findModule("move-remove")
+	if !remove.Danger || !remove.Internal {
+		t.Error("removing a folder is an internal danger module")
+	}
+	for _, p := range []string{"/etc/app", "/srv", "/var/lib/docker/volumes/app_db/_data", "/srv/projects/../etc"} {
+		if _, _, err := remove.build(map[string]string{"move": "m1", "path": p}); err == nil {
+			t.Errorf("move-remove took %s", p)
+		}
+	}
+
+	moveTempPaths(t)
+	dir := filepath.Join(t.TempDir(), "projects", "app")
+	if err := os.MkdirAll(filepath.Join(dir, "storage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saved := containersUsing
+	t.Cleanup(func() { containersUsing = saved })
+
+	containersUsing = func(string) []string { return []string{"app-web"} }
+	st, ctx, err := remove.build(map[string]string{"move": "m1", "path": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st[0].Run(ctx); err == nil || !strings.Contains(err.Error(), "app-web") {
+		t.Errorf("removed a folder a container uses: %v", err)
+	}
+
+	containersUsing = func(string) []string { return nil }
+	if err := st[0].Run(ctx); err != nil || system.FileExists(dir) || ctx.Result["removed"] != dir {
+		t.Errorf("not removed: %v", err)
+	}
+	if err := st[0].Run(ctx); err != nil {
+		t.Errorf("a folder gone already: %v", err)
+	}
+
+	got := usersOf("/office-max-web\t/srv/projects/office-max\t/srv/projects/office-max/src\n/votonia-web\t/srv/projects/votonia-prod\n/other\t\t/srv/projects/votonia-prod-old/x", "/srv/projects/votonia-prod")
+	if len(got) != 1 || got[0] != "votonia-web" {
+		t.Errorf("users %v", got)
+	}
+}
+
 func TestMoveImageRefs(t *testing.T) {
 	for ref, ok := range map[string]bool{
 		"votonia-commerce":                         true,

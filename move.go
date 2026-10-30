@@ -10,6 +10,7 @@ package main
 //	source       sudo forge run move-send     rsync each path over ssh with that key,
 //	                                          and the images: docker save into docker load
 //	both         sudo forge run move-close    the key and its line gone again
+//	source       sudo forge run move-remove   later, the old copy's folder, once nothing uses it
 //
 // On the destination the key's line in the deploy user's authorized_keys runs
 // `sudo -n forge run move-receive <move> "$SSH_ORIGINAL_COMMAND"`, which lets
@@ -507,6 +508,49 @@ var moveModules = []module{
 		},
 	},
 	{
+		Name:        "move-remove",
+		Title:       "Move: remove the old copy's folder",
+		Description: "Removes a moved project's folder from the server it left, as root (its containers wrote files the deploy user can't remove). Only a project folder, and only once no container, running or not, works in it or mounts anything from it.",
+		Danger:      true,
+		Internal:    true,
+		Inputs: []moduleInput{
+			{Name: "move", Type: "text", Label: "Move", Required: true},
+			{Name: "path", Type: "text", Label: "The project's folder here", Required: true},
+		},
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			if _, err := moveID(in); err != nil {
+				return nil, nil, err
+			}
+			p := in["path"]
+			kind, _, err := movePath(p, dockerRootDir())
+			if err != nil {
+				return nil, nil, err
+			}
+			if kind != "folder" {
+				return nil, nil, fmt.Errorf("%s isn't a project folder: a volume goes with docker volume rm", p)
+			}
+			ctx := &steps.Context{Result: map[string]any{}}
+			return []steps.Step{{Name: "Remove " + p, Run: func(c *steps.Context) error {
+				info, err := os.Lstat(p)
+				if errors.Is(err, os.ErrNotExist) {
+					c.Notes = append(c.Notes, p+" is gone already")
+					return nil
+				}
+				if err != nil || !info.IsDir() {
+					return fmt.Errorf("%s isn't a folder here", p)
+				}
+				if users := containersUsing(p); len(users) > 0 {
+					return fmt.Errorf("containers still use %s: %s", p, strings.Join(users, ", "))
+				}
+				if err := os.RemoveAll(p); err != nil {
+					return err
+				}
+				c.Result["removed"] = p
+				return nil
+			}}}, ctx, nil
+		},
+	},
+	{
 		Name:        "move-close",
 		Title:       "Move: close the copy's way in",
 		Description: "Stops a copy still running with a move's key, removes the key and its line in authorized_keys; with forget, also what the destination was told it may receive.",
@@ -544,6 +588,37 @@ var moveModules = []module{
 
 func init() {
 	modules = append(modules, moveModules...)
+}
+
+// containersUsing names the containers, running or not, that work in a folder
+// or mount something from inside it.
+var containersUsing = func(folder string) []string {
+	ids, err := system.Output("docker", "ps", "-aq")
+	if err != nil || strings.TrimSpace(ids) == "" {
+		return nil
+	}
+	out, err := system.Output("docker", append([]string{"inspect", "--format",
+		`{{.Name}}{{"\t"}}{{index .Config.Labels "com.docker.compose.project.working_dir"}}{{range .Mounts}}{{"\t"}}{{.Source}}{{end}}`},
+		strings.Fields(ids)...)...)
+	if err != nil {
+		return []string{"(docker inspect failed: " + err.Error() + ")"}
+	}
+	return usersOf(out, folder)
+}
+
+// usersOf reads containersUsing's inspect lines: name, working folder, mount sources.
+func usersOf(inspect, folder string) []string {
+	var users []string
+	for _, line := range strings.Split(strings.TrimSpace(inspect), "\n") {
+		fields := strings.Split(line, "\t")
+		for _, f := range fields[1:] {
+			if f != "" && (f == folder || strings.HasPrefix(f, folder+"/")) {
+				users = append(users, strings.TrimPrefix(fields[0], "/"))
+				break
+			}
+		}
+	}
+	return users
 }
 
 // rsyncStats reads the totals --stats prints.
