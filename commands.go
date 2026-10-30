@@ -16,6 +16,7 @@ import (
 	"github.com/mxm-bbv/cli/internal/system"
 	"github.com/mxm-bbv/cli/internal/tripwire"
 	"github.com/mxm-bbv/cli/internal/ui"
+	"github.com/mxm-bbv/cli/internal/update"
 )
 
 // runSteps drives steps in the live runner and reports whether they all
@@ -283,6 +284,34 @@ func runTripwire(args []string) int {
 	}
 	ui.Println(ui.StyleErr.Render("  usage: sudo forge tripwire [--baseline | --show]"))
 	return 2
+}
+
+// runAutoUpdate is `forge update auto on|off`: the timer that installs each
+// newer signed release by itself (refresh rewrites it for this binary).
+func runAutoUpdate(args []string) int {
+	if !requireRoot("update auto on") {
+		return 1
+	}
+	var err error
+	switch {
+	case len(args) == 1 && args[0] == "on":
+		err = update.SetAuto(true)
+	case len(args) == 1 && args[0] == "off":
+		err = update.SetAuto(false)
+	case len(args) == 1 && args[0] == "refresh":
+		err = update.Refresh()
+	default:
+		ui.Println(ui.StyleErr.Render("  usage: sudo forge update auto on | off"))
+		return 2
+	}
+	if err != nil {
+		ui.Println(ui.StyleErr.Render("  " + err.Error()))
+		return 1
+	}
+	if len(args) == 1 && args[0] != "refresh" {
+		ui.Println("  " + ui.StyleOK.Render("✓") + "  automatic updates " + args[0])
+	}
+	return 0
 }
 
 // saveState records the wizard's answers (no secrets) at config.StatePath.

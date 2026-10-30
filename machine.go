@@ -270,6 +270,21 @@ var modules = []module{
 			}), &steps.Context{}, nil
 		},
 	},
+	{
+		Name:        "auto-update",
+		Title:       "Automatic updates",
+		Description: "Every 15 minutes forge looks for a newer release and installs it the way Update forge does: signature and checksum first, the old binary back if the new one doesn't run. Each update is a Telegram alert. It trusts releases to run as root without asking first.",
+		Danger:      true,
+		Inputs:      []moduleInput{{Name: "mode", Type: "choice", Label: "Automatic updates", Required: true, Options: []string{"on", "off"}}},
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			if in["mode"] != "on" && in["mode"] != "off" {
+				return nil, nil, errors.New("mode: on or off")
+			}
+			return step("Automatic updates "+in["mode"], func() error {
+				return update.SetAuto(in["mode"] == "on")
+			}), &steps.Context{}, nil
+		},
+	},
 }
 
 // alertsConfig is the alerts module's inputs over what the server has: an
