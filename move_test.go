@@ -185,6 +185,12 @@ func TestMoveModulesRefuseBadInputs(t *testing.T) {
 			t.Errorf("move-send took %v", in)
 		}
 	}
+	caddy := findModule("caddy")
+	for _, p := range []string{"srv/projects", "/srv/../etc", "/", "/srv/projects;x"} {
+		if _, _, err := caddy.build(map[string]string{"projects": p}); err == nil {
+			t.Errorf("caddy took projects %q", p)
+		}
+	}
 	if !findModule("move-send").Internal || !findModule("move-accept").Danger {
 		t.Error("a move's modules are internal; letting a copy in is a danger")
 	}

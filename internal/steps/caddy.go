@@ -35,10 +35,17 @@ func caddyStep() Step {
 			}
 
 			// PROJECTS_PATH is mounted into Caddy as /projects (static files,
-			// PHP roots); a deploy box keeps projects in the deploy user's home.
+			// PHP roots); a deploy box keeps projects in the deploy user's home
+			// unless the setup names another folder (/srv/projects).
 			projects := cfg.HomeDir() + "/projects"
+			if cfg.CaddyProjects != "" {
+				projects = cfg.CaddyProjects
+			}
 			if _, err := system.Run("install", "-d", "-o", user, "-g", user, projects); err != nil {
 				return err
+			}
+			if system.FileExists(dir+"/.env") && cfg.CaddyProjects != "" && !system.FileContains(dir+"/.env", "PROJECTS_PATH="+projects) {
+				c.Notes = append(c.Notes, "⚠ "+dir+"/.env names another PROJECTS_PATH, and it stays: the sites already there read their files through it")
 			}
 			if !system.FileExists(dir + "/.env") {
 				if err := system.WriteFile(dir+"/.env", "PROJECTS_PATH="+projects+"\n", 0o644); err != nil {

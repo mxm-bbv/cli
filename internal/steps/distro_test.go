@@ -593,6 +593,22 @@ func TestCaddyFallsBackWithoutGitHub(t *testing.T) {
 	}
 }
 
+// TestCaddyMountsTheProjectsFolderItIsGiven: a server whose projects live in
+// /srv/projects (deploy.me's moves keep the folder) gets Caddy mounting that,
+// so a site's file roots under /projects resolve there too.
+func TestCaddyMountsTheProjectsFolderItIsGiven(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	cfg := config.Default()
+	cfg.Username, cfg.CaddyRepo, cfg.CaddyProjects = "deploy", config.DefaultCaddyRepo, "/srv/projects"
+	if err := caddyStep().Run(&Context{Cfg: cfg}); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	if !strings.Contains(log, "install -d -o deploy -g deploy /srv/projects") || strings.Contains(log, "/home/deploy/projects") {
+		t.Errorf("the projects folder isn't /srv/projects:\n%s", log)
+	}
+}
+
 // TestSharedAgentSecret: a Portainer Server has ONE AGENT_SECRET for all its
 // agents, so a given secret is used as-is (and kept for later runs); only
 // the first server generates one.
