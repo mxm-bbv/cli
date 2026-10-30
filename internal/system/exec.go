@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -146,15 +147,40 @@ func execute(logline, name string, args []string, stdin string) (string, error) 
 	return executeEnv(logline, name, args, stdin, nil, nil)
 }
 
+// RunProgress runs a command that may take hours (a copy between servers) with
+// a timeout of its own, and splits its output on carriage returns too, so a
+// progress line rewritten in place reaches onLine and the live display as it
+// changes. The log keeps whole lines only.
+func RunProgress(logline string, timeout time.Duration, onLine func(string), name string, args ...string) (string, error) {
+	return run(logline, name, args, "", nil, onLine, timeout, true)
+}
+
 // executeEnv is execute with optional extra environment entries (never logged)
 // and an optional per-line callback.
 func executeEnv(logline, name string, args []string, stdin string, extraEnv []string, onLine func(string)) (string, error) {
+	return run(logline, name, args, stdin, extraEnv, onLine, CommandTimeout, false)
+}
+
+// scanLinesOrReturns is bufio.ScanLines that also ends a line at "\r".
+func scanLinesOrReturns(data []byte, atEOF bool) (int, []byte, error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
+func run(logline, name string, args []string, stdin string, extraEnv []string, onLine func(string), timeout time.Duration, progress bool) (string, error) {
 	CommandLog = append(CommandLog, strings.TrimSpace(logline))
 	if DryRun {
 		return "", nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), CommandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -177,14 +203,24 @@ func executeEnv(logline, name string, args []string, stdin string, extraEnv []st
 	go func() {
 		sc := bufio.NewScanner(pr)
 		sc.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+		if progress {
+			sc.Split(scanLinesOrReturns)
+		}
 		for sc.Scan() {
 			line := sc.Text()
-			buf.WriteString(line)
-			buf.WriteByte('\n')
+			if progress && strings.TrimSpace(line) == "" {
+				continue
+			}
 			setActivity(line)
 			if onLine != nil {
 				onLine(line)
 			}
+			// A progress line is rewritten many times: the log and the output keep the rest.
+			if progress && isProgress(line) {
+				continue
+			}
+			buf.WriteString(line)
+			buf.WriteByte('\n')
 			if LogWriter != nil {
 				fmt.Fprintln(LogWriter, line)
 			}
@@ -209,12 +245,125 @@ func executeEnv(logline, name string, args []string, stdin string, extraEnv []st
 	setActivity("")
 
 	if ctx.Err() == context.DeadlineExceeded {
-		return buf.String(), fmt.Errorf("%s: timed out after %s — likely a stuck prompt or lock; see the log", logline, CommandTimeout)
+		return buf.String(), fmt.Errorf("%s: timed out after %s — likely a stuck prompt or lock; see the log", logline, timeout)
 	}
 	if runErr != nil {
 		return buf.String(), fmt.Errorf("%s: %w\n%s", logline, runErr, tail(buf.String(), 20))
 	}
 	return buf.String(), nil
+}
+
+// RunPipe runs `from | to` (an image save into the ssh that loads it on
+// another server) with a timeout of its own. How much has gone through is the
+// activity line while it runs; what `to` prints comes back. A side that fails
+// stops the other.
+func RunPipe(logline string, timeout time.Duration, from, to []string) (string, int64, error) {
+	CommandLog = append(CommandLog, strings.TrimSpace(logline))
+	if DryRun {
+		return "", 0, nil
+	}
+	if LogWriter != nil {
+		fmt.Fprintf(LogWriter, "\n$ %s\n", logline)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	src := exec.CommandContext(ctx, from[0], from[1:]...)
+	dst := exec.CommandContext(ctx, to[0], to[1:]...)
+	var srcErr, out strings.Builder
+	src.Stderr = &srcErr
+	dst.Stdout = &out
+	dst.Stderr = &out
+
+	pr, pw := io.Pipe()
+	src.Stdout = pw
+	sent := &countingReader{r: pr}
+	dst.Stdin = sent
+
+	if err := src.Start(); err != nil {
+		return "", 0, fmt.Errorf("%s: %w", logline, err)
+	}
+	if err := dst.Start(); err != nil {
+		cancel()
+		_ = src.Wait()
+		return "", 0, fmt.Errorf("%s: %w", logline, err)
+	}
+
+	stop := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				setActivity(HumanBytes(sent.n.Load()) + " sent")
+			}
+		}
+	}()
+
+	srcDone := make(chan error, 1)
+	go func() {
+		err := src.Wait()
+		pw.CloseWithError(err)
+		srcDone <- err
+	}()
+	dstWait := dst.Wait()
+	if dstWait != nil {
+		// Nothing reads any more: the saving side stops on its next write.
+		pr.CloseWithError(dstWait)
+	}
+	srcWait := <-srcDone
+	close(stop)
+	setActivity("")
+
+	if LogWriter != nil {
+		fmt.Fprint(LogWriter, out.String())
+	}
+	n := sent.n.Load()
+	switch {
+	case ctx.Err() == context.DeadlineExceeded:
+		return out.String(), n, fmt.Errorf("%s: timed out after %s", logline, timeout)
+	case srcWait != nil:
+		return out.String(), n, fmt.Errorf("%s: %w\n%s", logline, srcWait, tail(srcErr.String(), 10))
+	case dstWait != nil:
+		return out.String(), n, fmt.Errorf("%s: %w\n%s", logline, dstWait, tail(out.String(), 10))
+	}
+	return out.String(), n, nil
+}
+
+// countingReader counts what's read through it, for RunPipe's progress.
+type countingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// HumanBytes is a size as people read it: 1.4 GB, 512 MB.
+func HumanBytes(n int64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTPE"[exp])
+}
+
+// isProgress: rsync's --info=progress2 line ("  1,234  45%  10.5MB/s  0:01:23").
+func isProgress(line string) bool {
+	f := strings.Fields(line)
+	return len(f) >= 4 && strings.HasSuffix(f[1], "%") && strings.HasSuffix(f[2], "/s")
 }
 
 // tail returns the last n lines of s.

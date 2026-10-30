@@ -57,8 +57,9 @@ type module struct {
 	Name        string        `json:"name"`
 	Title       string        `json:"title"`
 	Description string        `json:"description"`
-	Danger      bool          `json:"danger"` // changes how the server is reached or what it trusts: ask the person first
-	Waits       bool          `json:"waits"`  // waits for a person: a login link or a code to approve
+	Danger      bool          `json:"danger"`   // changes how the server is reached or what it trusts: ask the person first
+	Waits       bool          `json:"waits"`    // waits for a person: a login link or a code to approve
+	Internal    bool          `json:"internal"` // a part of something a program does (a move), not a form to show a person
 	Inputs      []moduleInput `json:"inputs"`
 
 	build func(in map[string]string) ([]steps.Step, *steps.Context, error)
@@ -403,6 +404,10 @@ func readInputs(r io.Reader, m *module) (map[string]string, error) {
 // runModule is `forge run <module>`.
 func runModule(args []string) int {
 	out := os.Stdout
+	// Its stdin and stdout are rsync's own stream: no inputs, no events.
+	if len(args) > 0 && args[0] == "move-receive" {
+		return moveReceive(args[1:])
+	}
 	if len(args) == 0 {
 		emit(out, "done", map[string]any{"ok": false, "error": "usage: forge run <module> (forge modules lists them)"})
 		return 2
@@ -501,7 +506,11 @@ func machineRun(out io.Writer, m *module, in map[string]string, st []steps.Step,
 	if notes == nil {
 		notes = []string{}
 	}
-	emit(out, "done", map[string]any{"ok": ok, "notes": notes, "tailnet_ip": ctx.TailnetIP, "log": logPath})
+	done := map[string]any{"ok": ok, "notes": notes, "tailnet_ip": ctx.TailnetIP, "log": logPath}
+	if ctx.Result != nil {
+		done["result"] = ctx.Result
+	}
+	emit(out, "done", done)
 	if !ok {
 		return 1
 	}
