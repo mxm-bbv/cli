@@ -21,6 +21,7 @@ type Context struct {
 	TailscaleLogin    bool            // log in to Tailscale now (browser/QR) instead of leaving it for later
 	GitHubRepos       []string        // repos whose deploy key works (ssh -T verified)
 	Notes             []string
+	Result            map[string]any // what a machine-mode module hands back to the program (forge run's done event)
 }
 
 // Step is a single, idempotent unit of work.
