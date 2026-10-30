@@ -54,8 +54,10 @@ var (
 	moveHostKey    = regexp.MustCompile(`^(ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-rsa) ([A-Za-z0-9+/]+={0,2})$`)
 	moveAddress    = regexp.MustCompile(`^[A-Za-z0-9.:-]+$`)
 	moveOnlyName   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
-	moveImageName  = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9._/-]*(?::[0-9]+)?/)?[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
-	moveImageID    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	// rsync's --usermap/--groupmap as a move uses them: numeric IDs only, FROM:TO,…
+	moveIDMap     = regexp.MustCompile(`^[0-9]{1,10}:[0-9]{1,10}(?:,[0-9]{1,10}:[0-9]{1,10}){0,7}$`)
+	moveImageName = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9._/-]*(?::[0-9]+)?/)?[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
+	moveImageID   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 // moveImageRef is an image as docker save takes it: a name with its tag, or an image ID.
@@ -376,6 +378,8 @@ var moveModules = []module{
 			{Name: "delete", Type: "choice", Label: "Remove what the source no longer has", Options: []string{"yes", "no"}},
 			{Name: "only", Type: "text", Label: "Only these folders one level down in each source, by name (an edge's certificates of one project's hosts)"},
 			{Name: "images", Type: "text", Label: "Images to send, by name:tag or ID, one per line"},
+			{Name: "usermap", Type: "text", Label: "User IDs that differ there, FROM:TO,… (the deploy user's own files)"},
+			{Name: "groupmap", Type: "text", Label: "Group IDs that differ there, FROM:TO,…"},
 		},
 		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
 			id, err := moveID(in)
@@ -402,6 +406,11 @@ var moveModules = []module{
 			for _, name := range only {
 				if !moveOnlyName.MatchString(name) {
 					return nil, nil, fmt.Errorf("only: %q isn't a host name", name)
+				}
+			}
+			for _, name := range []string{"usermap", "groupmap"} {
+				if in[name] != "" && !moveIDMap.MatchString(in[name]) {
+					return nil, nil, fmt.Errorf("%s: numeric FROM:TO pairs, comma-separated", name)
 				}
 			}
 			images := moveLines(in["images"])
@@ -451,6 +460,14 @@ var moveModules = []module{
 					args := []string{"-aHAX", "--numeric-ids", "--info=progress2", "--stats", "-e", sshCmd}
 					if in["delete"] == "yes" {
 						args = append(args, "--delete")
+					}
+					// The deploy user is another ID there: its files stay its own,
+					// not some other account's (the copy keeps numeric IDs).
+					if in["usermap"] != "" {
+						args = append(args, "--usermap="+in["usermap"])
+					}
+					if in["groupmap"] != "" {
+						args = append(args, "--groupmap="+in["groupmap"])
 					}
 					if len(only) > 0 {
 						args = append(args, "--prune-empty-dirs", "--include=/*/")
@@ -579,6 +596,10 @@ func moveReceiveArgs(command string, m *moveManifest) ([]string, error) {
 		switch {
 		case a == "--sender":
 			return nil, errors.New("nothing is read from this server")
+		case strings.HasPrefix(a, "--usermap=") || strings.HasPrefix(a, "--groupmap="):
+			if _, value, _ := strings.Cut(a, "="); !moveIDMap.MatchString(value) {
+				return nil, fmt.Errorf("%s isn't allowed", a)
+			}
 		case strings.HasPrefix(a, "--") && !slices.Contains(rsyncLongOptions, a):
 			return nil, fmt.Errorf("%s isn't allowed", a)
 		case !strings.HasPrefix(a, "--") && !rsyncShortOptions.MatchString(a):

@@ -52,7 +52,10 @@ type Config struct {
 	GitHubRepos []string `yaml:"github_repos,omitempty"`
 	// CaddyRepo is the operator's Caddy setup (a repo with a
 	// docker-compose.prod.yml), run as the box's web server. "" = none.
-	CaddyRepo         string `yaml:"caddy_repo"`
+	CaddyRepo string `yaml:"caddy_repo"`
+	// CaddyProjects is the folder a new Caddy setup mounts as /projects (its
+	// sites' file roots); empty is the deploy user's ~/projects.
+	CaddyProjects     string `yaml:"caddy_projects,omitempty"`
 	GenerateGitHubKey bool   `yaml:"generate_github_key"`
 	GitHubKeyComment  string `yaml:"github_key_comment"`
 

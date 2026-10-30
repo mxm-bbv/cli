@@ -151,9 +151,18 @@ var modules = []module{
 		Name:        "caddy",
 		Title:       "Caddy web server",
 		Description: "Installs or updates the Caddy setup from your repository on :80/:443, with the proxy-network its sites reach containers on.",
-		Inputs:      []moduleInput{{Name: "repo", Type: "text", Label: "Caddy repository", Help: "owner/repo with a docker-compose.prod.yml; empty keeps the one set up before"}},
+		Inputs: []moduleInput{
+			{Name: "repo", Type: "text", Label: "Caddy repository", Help: "owner/repo with a docker-compose.prod.yml; empty keeps the one set up before"},
+			{Name: "projects", Type: "text", Label: "Projects folder", Help: "mounted as /projects for the sites' files, on a new setup; empty is the deploy user's ~/projects"},
+		},
 		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
 			cfg, _ := loadState()
+			if p := in["projects"]; p != "" {
+				if !filepath.IsAbs(p) || !movePathChars.MatchString(p) || strings.Contains(p, "..") || p == "/" {
+					return nil, nil, errors.New("projects: an absolute folder")
+				}
+				cfg.CaddyProjects = filepath.Clean(p)
+			}
 			switch {
 			case in["repo"] != "":
 				cfg.CaddyRepo = in["repo"]
@@ -167,8 +176,13 @@ var modules = []module{
 			return st, ctx, nil
 		},
 		after: func(in map[string]string) {
-			if saved, ok := loadState(); ok && in["repo"] != "" {
-				saved.CaddyRepo = in["repo"]
+			if saved, ok := loadState(); ok && (in["repo"] != "" || in["projects"] != "") {
+				if in["repo"] != "" {
+					saved.CaddyRepo = in["repo"]
+				}
+				if in["projects"] != "" {
+					saved.CaddyProjects = filepath.Clean(in["projects"])
+				}
 				_ = saveState(saved)
 			}
 		},
@@ -267,6 +281,21 @@ var modules = []module{
 					return errors.New("the update didn't go through (signature, checksum or download)")
 				}
 				return nil
+			}), &steps.Context{}, nil
+		},
+	},
+	{
+		Name:        "auto-update",
+		Title:       "Automatic updates",
+		Description: "Every 15 minutes forge looks for a newer release and installs it the way Update forge does: signature and checksum first, the old binary back if the new one doesn't run. Each update is a Telegram alert. It trusts releases to run as root without asking first.",
+		Danger:      true,
+		Inputs:      []moduleInput{{Name: "mode", Type: "choice", Label: "Automatic updates", Required: true, Options: []string{"on", "off"}}},
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			if in["mode"] != "on" && in["mode"] != "off" {
+				return nil, nil, errors.New("mode: on or off")
+			}
+			return step("Automatic updates "+in["mode"], func() error {
+				return update.SetAuto(in["mode"] == "on")
 			}), &steps.Context{}, nil
 		},
 	},

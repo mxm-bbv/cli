@@ -54,6 +54,7 @@ func TestMoveReceiveArgs(t *testing.T) {
 	for _, cmd := range []string{
 		"rsync --server -lHogDtpAXre.iLsfxCIvu --delete --numeric-ids . /srv/projects/app/",
 		"rsync --server -lHogDtpre.iLsfxCIvu --numeric-ids . /var/lib/docker/volumes/app_db/_data",
+		"rsync --server -lHogDtpAXre.iLsfxCIvu --delete --numeric-ids --usermap=1000:1001 --groupmap=1000:1001,4:5 . /srv/projects/app/",
 	} {
 		if args, err := moveReceiveArgs(cmd, m); err != nil || args[0] != "rsync" {
 			t.Errorf("%q: %v", cmd, err)
@@ -61,12 +62,15 @@ func TestMoveReceiveArgs(t *testing.T) {
 	}
 	for cmd, want := range map[string]string{
 		"sh -c id": "only rsync",
-		"rsync --server --sender -lHogDtpre.iLsfxCIvu . /srv/projects/app/":           "nothing is read",
-		"rsync --server -lHogDtpre.iLsfxCIvu --numeric-ids . /etc/":                   "isn't a path this move may write",
-		"rsync --server -lHogDtpre.iLsfxCIvu --rsync-path=x . /srv/projects/app/":     "isn't allowed",
-		"rsync --server -lHogDtpre.iLsfxCIvu --log-file=/etc/x . /srv/projects/app/":  "isn't allowed",
-		"rsync --server -lHogDtpre.iLsfxCIvu /etc/passwd . /srv/projects/app/":        "isn't allowed",
-		"rsync --server -lHogDtpre.iLsfxCIvu . /srv/projects/app/ /srv/projects/app/": "after",
+		"rsync --server --sender -lHogDtpre.iLsfxCIvu . /srv/projects/app/":               "nothing is read",
+		"rsync --server -lHogDtpre.iLsfxCIvu --numeric-ids . /etc/":                       "isn't a path this move may write",
+		"rsync --server -lHogDtpre.iLsfxCIvu --rsync-path=x . /srv/projects/app/":         "isn't allowed",
+		"rsync --server -lHogDtpre.iLsfxCIvu --log-file=/etc/x . /srv/projects/app/":      "isn't allowed",
+		"rsync --server -lHogDtpre.iLsfxCIvu /etc/passwd . /srv/projects/app/":            "isn't allowed",
+		"rsync --server -lHogDtpre.iLsfxCIvu . /srv/projects/app/ /srv/projects/app/":     "after",
+		"rsync --server -lHogDtpre.iLsfxCIvu --usermap=*:0 . /srv/projects/app/":          "isn't allowed",
+		"rsync --server -lHogDtpre.iLsfxCIvu --groupmap=deploy:root . /srv/projects/app/": "isn't allowed",
+		"rsync --server -lHogDtpre.iLsfxCIvu --usermap=1000:1001x . /srv/projects/app/":   "isn't allowed",
 	} {
 		if _, err := moveReceiveArgs(cmd, m); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: got %v, want %q", cmd, err, want)
@@ -175,9 +179,16 @@ func TestMoveModulesRefuseBadInputs(t *testing.T) {
 		{"move": "m1", "to": "10.0.0.2", "user": "deploy", "host_key": "ssh-ed25519 AAAA", "images": "--output=/etc/x"},
 		{"move": "m1", "to": "10.0.0.2", "user": "deploy", "host_key": "ssh-ed25519 AAAA", "images": "app:latest; rm -rf /"},
 		{"move": "m1", "to": "10.0.0.2", "user": "deploy", "host_key": "ssh-ed25519 AAAA"},
+		{"move": "m1", "to": "10.0.0.2", "user": "deploy", "host_key": "ssh-ed25519 AAAA", "pairs": "/srv/projects/app /srv/projects/app", "usermap": "*:0"},
 	} {
 		if _, _, err := send.build(in); err == nil {
 			t.Errorf("move-send took %v", in)
+		}
+	}
+	caddy := findModule("caddy")
+	for _, p := range []string{"srv/projects", "/srv/../etc", "/", "/srv/projects;x"} {
+		if _, _, err := caddy.build(map[string]string{"projects": p}); err == nil {
+			t.Errorf("caddy took projects %q", p)
 		}
 	}
 	if !findModule("move-send").Internal || !findModule("move-accept").Danger {
@@ -289,6 +300,7 @@ func TestMoveLive(t *testing.T) {
 		ln -sf storage /srv/projects/src-app/public
 		ln -f /srv/projects/src-app/index.php /srv/projects/src-app/index-hard.php
 		echo old > /srv/projects/src-app/gone.txt
+		echo mine > /srv/projects/src-app/deploy.txt && chown 4242:4242 /srv/projects/src-app/deploy.txt /srv/projects/src-app
 		echo pgdata > /var/lib/docker/volumes/app_db/_data/PG_VERSION && chown -R 70:70 /var/lib/docker/volumes/app_db/_data && chmod 0700 /var/lib/docker/volumes/app_db/_data`)
 
 	key := runMove(t, "move-key", map[string]string{"move": "m1"})["result"].(map[string]any)["key"].(string)
@@ -296,7 +308,8 @@ func TestMoveLive(t *testing.T) {
 		"paths": "/srv/projects/dst-app\n/var/lib/docker/volumes/app_db2/_data"})
 	hostKey := strings.Join(strings.Fields(sh("cat /etc/ssh/ssh_host_ed25519_key.pub"))[:2], " ")
 	send := map[string]string{"move": "m1", "to": "127.0.0.1", "port": "2222", "user": "mover", "host_key": hostKey,
-		"pairs": "/srv/projects/src-app /srv/projects/dst-app\n/var/lib/docker/volumes/app_db/_data /var/lib/docker/volumes/app_db2/_data", "delete": "no"}
+		"pairs": "/srv/projects/src-app /srv/projects/dst-app\n/var/lib/docker/volumes/app_db/_data /var/lib/docker/volumes/app_db2/_data", "delete": "no",
+		"usermap": "4242:4343", "groupmap": "4242:4343"}
 	done := runMove(t, "move-send", send)
 	if done["result"].(map[string]any)["/srv/projects/src-app"] == nil {
 		t.Errorf("no stats: %v", done)
@@ -309,6 +322,8 @@ func TestMoveLive(t *testing.T) {
 		}
 	}
 	check("stat -c %u:%g /srv/projects/dst-app/storage/a.jpg", "33:33")
+	// The deploy user's files and the folder itself are the deploy user's there, whatever its ID.
+	check("stat -c %u:%g /srv/projects/dst-app /srv/projects/dst-app/deploy.txt", "4343:4343\n4343:4343")
 	check("readlink /srv/projects/dst-app/public", "storage")
 	check("stat -c %h /srv/projects/dst-app/index.php", "2")
 	check("stat -c '%u:%g %a' /var/lib/docker/volumes/app_db2/_data /var/lib/docker/volumes/app_db2/_data/PG_VERSION", "70:70 700\n70:70 644")

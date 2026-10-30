@@ -10,6 +10,7 @@ import (
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/tripwire"
+	"github.com/mxm-bbv/cli/internal/update"
 )
 
 // Report is `forge status --json`: what `forge status` shows, for a program
@@ -51,9 +52,11 @@ type Report struct {
 		Logins     string   `json:"logins"`
 		Quiet      []string `json:"quiet"`
 	} `json:"alerting"`
-	NextAudit string `json:"next_audit"`
-	Tripwire  bool   `json:"tripwire"`
-	Swap      bool   `json:"swap"`
+	// AutoUpdate: the timer that installs newer releases, and its last look (forge ≥ 0.7.1).
+	AutoUpdate update.AutoState `json:"auto_update"`
+	NextAudit  string           `json:"next_audit"`
+	Tripwire   bool             `json:"tripwire"`
+	Swap       bool             `json:"swap"`
 }
 
 // Collect gathers the report. It changes nothing.
@@ -99,6 +102,7 @@ func Collect(version string) Report {
 		}
 	}
 	r.Tripwire = tripwire.Installed()
+	r.AutoUpdate = update.State()
 	r.Swap = strings.TrimSpace(cmd("swapon", "--show")) != ""
 	return r
 }

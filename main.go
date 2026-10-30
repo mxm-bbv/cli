@@ -74,6 +74,12 @@ func main() {
 			if len(os.Args) > 2 && os.Args[2] == "images" {
 				os.Exit(update.Images())
 			}
+			if len(os.Args) > 2 && os.Args[2] == "--auto" {
+				os.Exit(update.Auto(version))
+			}
+			if len(os.Args) > 2 && os.Args[2] == "auto" {
+				os.Exit(runAutoUpdate(os.Args[3:]))
+			}
 			allowUnsigned := false
 			for _, a := range os.Args[2:] {
 				if a == "--allow-unsigned" {
@@ -275,7 +281,7 @@ const usage = `  forge                      set up a fresh server (wizard)
   sudo forge caddy [o/r]     install/update the Caddy web server
   sudo forge ssh [tailnet-only|public]
   sudo forge tripwire [--show|--baseline]
-  sudo forge audit | status | update [images] | lint <compose.yml>
+  sudo forge audit | status | update [images | auto on|off] | lint <compose.yml>
 
   For programs (deploy.me over ssh): forge modules --json, sudo forge run <module>
   (inputs as JSON on stdin), status --json, audit --json; sudo forge machine enable
