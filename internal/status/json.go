@@ -42,8 +42,12 @@ type Report struct {
 		UFW        bool `json:"ufw"`
 		DockerUser bool `json:"docker_user"`
 	} `json:"firewall"`
-	SSHTailnetOnly bool     `json:"ssh_tailnet_only"`
-	Alerts         []string `json:"alerts"` // the alert timers that run
+	SSHTailnetOnly bool `json:"ssh_tailnet_only"`
+	// SSHLogin is who sshd lets in (forge ≥ 0.8; root only), and DeployUser the
+	// user forge's setup made.
+	SSHLogin   steps.SSHLogin `json:"ssh_login"`
+	DeployUser string         `json:"deploy_user"`
+	Alerts     []string       `json:"alerts"` // the alert timers that run
 	// Alerting is where alerts go and which logins are said (forge ≥ 0.6;
 	// readable as root only, like alerts.env).
 	Alerting struct {
@@ -84,6 +88,13 @@ func Collect(version string) Report {
 	r.Firewall.UFW = strings.Contains(cmd("ufw", "status"), "Status: active")
 	r.Firewall.DockerUser = strings.Contains(cmd("iptables", "-S", "DOCKER-USER"), "DROP")
 	r.SSHTailnetOnly = r.Root && !steps.SSHOpenToInternet()
+	r.SSHLogin = steps.SSHLogin{Users: []string{}}
+	if r.Root {
+		r.SSHLogin = steps.EffectiveSSHLogin()
+		if saved, err := config.Load(config.StatePath); err == nil {
+			r.DeployUser = saved.Username
+		}
+	}
 
 	r.Alerts = []string{}
 	for _, t := range []string{"forge-audit.timer", "forge-health.timer"} {

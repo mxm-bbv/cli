@@ -12,7 +12,9 @@ import (
 	"testing"
 
 	"github.com/mxm-bbv/cli/internal/alerts"
+	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
+	"github.com/mxm-bbv/cli/internal/system"
 )
 
 // TestModulesCatalog: every module a program can list is one it can run,
@@ -33,7 +35,7 @@ func TestModulesCatalog(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"tailscale", "agent-secret", "agent-remove", "github", "caddy", "ssh", "tripwire-baseline", "alerts", "update", "auto-update"} {
+	for _, name := range []string{"setup", "ssh-login", "tailscale", "agent-secret", "agent-remove", "github", "caddy", "ssh", "tripwire-baseline", "alerts", "update", "auto-update"} {
 		if !seen[name] {
 			t.Errorf("module %s missing", name)
 		}
@@ -194,5 +196,121 @@ func TestAlertsModuleKeepsTheServersBot(t *testing.T) {
 		if _, err := alertsConfig(in); err == nil {
 			t.Errorf("%v accepted", in)
 		}
+	}
+}
+
+func setupAnswers(more map[string]string) map[string]string {
+	in := map[string]string{"username": "deploy", "password": "s3cret-pass", "admin_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK deploy.me studio-os", "portainer": "off"}
+	for k, v := range more {
+		in[k] = v
+	}
+	return in
+}
+
+// TestSetupAnswers: the wizard's questions as a program answers them, with the
+// wizard's own checks, and an answer can't become more than it says.
+func TestSetupAnswers(t *testing.T) {
+	cfg, err := setupConfig(setupAnswers(map[string]string{
+		"github_repos": "acme/api, acme/web", "hostname": "studio-os", "timezone": "Asia/Almaty", "swap_gb": "4",
+		"tailscale": "no", "docker_daemon": "yes", "caddy": "yes", "caddy_repo": "acme/caddy", "projects": "/srv/projects/",
+		"firewall": "no", "kernel": "no",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Username != "deploy" || cfg.DeployPassword != "s3cret-pass" || cfg.AdminKeySource != "paste" || !strings.HasPrefix(cfg.AdminKeyValue, "ssh-ed25519 ") {
+		t.Errorf("user and key: %+v", cfg)
+	}
+	if !slices.Equal(cfg.GitHubRepos, []string{"acme/api", "acme/web"}) || cfg.Hostname != "studio-os" || cfg.Timezone != "Asia/Almaty" || cfg.SwapGB != 4 {
+		t.Errorf("base: %+v", cfg)
+	}
+	if cfg.InstallTailscale || cfg.InstallPortainer || cfg.EnableFirewall || cfg.HardenKernel || !cfg.EnableLogRotation {
+		t.Errorf("features: %+v", cfg)
+	}
+	if cfg.CaddyRepo != "acme/caddy" || cfg.CaddyProjects != "/srv/projects" {
+		t.Errorf("caddy: %q %q", cfg.CaddyRepo, cfg.CaddyProjects)
+	}
+	if off, err := setupConfig(setupAnswers(map[string]string{"caddy": "no"})); err != nil || off.CaddyRepo != "" {
+		t.Errorf("caddy off: %q, %v", off.CaddyRepo, err)
+	}
+
+	for name, more := range map[string]map[string]string{
+		"root as the deploy user":       {"username": "root"},
+		"a username that's a command":   {"username": "deploy;reboot"},
+		"no key":                        {"admin_key": ""},
+		"a key with options in front":   {"admin_key": `command="/bin/sh" ssh-ed25519 AAAAC3Nz x`},
+		"two lines of key":              {"admin_key": "ssh-ed25519 AAAAC3Nz x\nssh-ed25519 AAAAC3Ny y"},
+		"a timezone that's a path":      {"timezone": "../../etc/passwd"},
+		"swap in words":                 {"swap_gb": "two"},
+		"a relative projects folder":    {"projects": "srv/projects"},
+		"a projects folder climbing up": {"projects": "/srv/../etc"},
+		"a top-level projects folder":   {"projects": "/opt"},
+		"a repo that isn't one":         {"github_repos": "not a repo"},
+		"a tailnet agent, no tailscale": {"tailscale": "no", "portainer": "tailnet"},
+		"a short AGENT_SECRET":          {"agent_secret": "short"},
+		"alerts with no bot":            {"alerts": "yes"},
+	} {
+		if _, err := setupConfig(setupAnswers(more)); err == nil {
+			t.Errorf("%s: taken", name)
+		}
+	}
+}
+
+// TestSetupStepsLeaveSSHDAlone: the setup never closes sshd, whatever it's
+// asked: ssh-login does, once the program has proved the new sign-in.
+func TestSetupStepsLeaveSSHDAlone(t *testing.T) {
+	m := findModule("setup")
+	if !m.Internal || !m.Danger || !m.Waits {
+		t.Errorf("setup: %+v", m)
+	}
+	system.DryRun = true
+	t.Cleanup(func() { system.DryRun = false })
+	st, ctx, err := m.build(setupAnswers(map[string]string{"projects": "/srv/projects", "tailscale": "yes", "tailscale_login": "yes"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, s := range st {
+		names = append(names, s.Name)
+		if strings.Contains(s.Name, "SSH hardening") {
+			t.Errorf("setup closes sshd: %s", s.Name)
+		}
+	}
+	if !ctx.TailscaleLogin {
+		t.Error("tailscale_login: not asked")
+	}
+	if !slices.Contains(names, "Create deploy user with sudo + docker access") || !strings.HasPrefix(names[0], "Preflight") {
+		t.Errorf("steps: %v", names)
+	}
+	if !slices.Contains(names, "Projects folder /srv/projects for deploy") || names[len(names)-1] != "Machine access for deploy" {
+		t.Errorf("the last steps: %v", names)
+	}
+	for _, s := range st {
+		if s.Skip != nil && s.Skip(ctx) {
+			continue
+		}
+		if err := s.Run(ctx); err != nil {
+			t.Errorf("%s: %v", s.Name, err)
+		}
+	}
+}
+
+// TestSSHLoginNeedsASetup: closing sign-in needs to know who stays able to
+// sign in, and closing root refuses while that user has no key.
+func TestSSHLoginNeedsASetup(t *testing.T) {
+	if _, err := os.Stat(config.StatePath); err == nil {
+		t.Skip("this machine was set up by forge")
+	}
+	if _, _, err := findModule("ssh-login").build(map[string]string{"root": "off"}); err == nil || !strings.Contains(err.Error(), "wasn't set up by forge") {
+		t.Errorf("no state: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Username, cfg.DisableRootLogin = "nobody-with-no-key", true
+	st, ctx := steps.SSHLoginSteps(cfg)
+	if len(st) != 1 || st[0].Skip != nil {
+		t.Fatalf("steps: %+v", st)
+	}
+	if err := st[0].Run(ctx); err == nil || !strings.Contains(err.Error(), "refusing to close root login") {
+		t.Errorf("no key: %v", err)
 	}
 }

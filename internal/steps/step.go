@@ -2,6 +2,8 @@
 package steps
 
 import (
+	"fmt"
+
 	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/system"
 )
@@ -62,6 +64,58 @@ func BuildSteps(cfg config.Config) ([]Step, *Context) {
 		tripwireStep(),     // last: its baseline is the finished server
 	}
 	return steps, c
+}
+
+// ServerSteps is BuildSteps for a program driving the setup over ssh: everything
+// but closing sshd, and Tailscale's login when it's asked for. The program signs
+// in as the deploy user first, on a connection of its own, and only then closes
+// the door with SSHLoginSteps: nobody is locked out by a key that doesn't work.
+func ServerSteps(cfg config.Config, tailscaleLogin bool) ([]Step, *Context) {
+	all, c := BuildSteps(cfg)
+	c.TailscaleLogin = c.TailscaleLogin || tailscaleLogin
+	st := make([]Step, 0, len(all))
+	for _, s := range all {
+		if s.Name != sshHardeningName {
+			st = append(st, s)
+		}
+	}
+	return st, c
+}
+
+// SSHLoginSteps applies forge's sshd policy with root and password sign-in as
+// cfg says. It always runs: opening them again is as much a change as closing
+// them. Closing root (or passwords) refuses while the deploy user has no key.
+func SSHLoginSteps(cfg config.Config) ([]Step, *Context) {
+	s := sshHardeningStep()
+	s.Skip = nil
+	run := s.Run
+	s.Run = func(c *Context) error {
+		if c.Cfg.DisableRootLogin && !system.DryRun && !hasAuthorizedKey(c.Cfg.HomeDir()+"/.ssh/authorized_keys") {
+			return fmt.Errorf("refusing to close root login: %s has no SSH key, nobody could sign in", c.Cfg.Username)
+		}
+		return run(c)
+	}
+	return []Step{s}, &Context{Cfg: cfg, AdminKeyInstalled: hasAuthorizedKey(cfg.HomeDir() + "/.ssh/authorized_keys")}
+}
+
+// CurrentSSHPort is the port sshd answers on now (22 when it can't tell).
+func CurrentSSHPort() int {
+	if ports := currentSSHPorts(); len(ports) > 0 {
+		return ports[0]
+	}
+	return 22
+}
+
+// ProjectsFolderStep makes the folder the deploy user keeps its projects in
+// and gives it that user. Only the folder itself: what's in it stays whose it is.
+func ProjectsFolderStep(user, folder string) Step {
+	return Step{
+		Name: "Projects folder " + folder + " for " + user,
+		Run: func(*Context) error {
+			_, err := system.Run("install", "-d", "-o", user, "-g", user, folder)
+			return err
+		},
+	}
 }
 
 // TailscaleSteps logs the box in to Tailscale (link + QR code in the runner)

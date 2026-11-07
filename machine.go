@@ -24,7 +24,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -72,7 +74,214 @@ func step(name string, run func() error) []steps.Step {
 	return []steps.Step{{Name: name, Run: func(*steps.Context) error { return run() }}}
 }
 
+// yesNo is the choice a program answers on/off questions with.
+var yesNo = []string{"yes", "no"}
+
+// setupInputs are the wizard's questions, for a program with a page of its own
+// to ask them on. An empty answer takes what the wizard offers first, or what
+// an earlier setup chose.
+var setupInputs = []moduleInput{
+	{Name: "username", Type: "text", Label: "Deploy user", Help: "created with sudo and docker access", Required: true},
+	{Name: "password", Type: "secret", Label: "Its password", Help: "for sudo at the server; empty keeps the one it has"},
+	{Name: "admin_key", Type: "text", Label: "Public key", Help: "the key that signs in as the deploy user", Required: true},
+	{Name: "github_repos", Type: "text", Label: "GitHub repositories", Help: "owner/repo, each gets a read-only deploy key"},
+	{Name: "base", Type: "choice", Label: "Base tuning", Options: yesNo},
+	{Name: "hostname", Type: "text", Label: "Hostname"},
+	{Name: "timezone", Type: "text", Label: "Timezone"},
+	{Name: "swap_gb", Type: "text", Label: "Swap in GB"},
+	{Name: "tailscale", Type: "choice", Label: "Tailscale", Options: yesNo},
+	{Name: "tailscale_login", Type: "choice", Label: "Log in to Tailscale now", Options: yesNo},
+	{Name: "tailscale_ssh", Type: "choice", Label: "Tailscale SSH", Options: yesNo},
+	{Name: "docker_daemon", Type: "choice", Label: "Docker daemon hardening and log rotation", Options: yesNo},
+	{Name: "portainer", Type: "choice", Label: "Portainer Agent", Options: []string{"off", "tailnet", "public"}},
+	{Name: "agent_secret", Type: "secret", Label: "AGENT_SECRET"},
+	{Name: "caddy", Type: "choice", Label: "Caddy web server", Options: yesNo},
+	{Name: "caddy_repo", Type: "text", Label: "Caddy repository"},
+	{Name: "projects", Type: "text", Label: "Projects folder", Help: "made for the deploy user, and mounted as /projects in a new Caddy"},
+	{Name: "watchtower", Type: "choice", Label: "Watchtower", Options: yesNo},
+	{Name: "firewall", Type: "choice", Label: "Firewall", Options: yesNo},
+	{Name: "auto_updates", Type: "choice", Label: "Security updates", Options: yesNo},
+	{Name: "auto_reboot", Type: "choice", Label: "Reboot at 04:00 when an update needs it", Options: yesNo},
+	{Name: "kernel", Type: "choice", Label: "Kernel and network hardening", Options: yesNo},
+	{Name: "alerts", Type: "choice", Label: "Telegram alerts", Options: yesNo},
+	{Name: "token", Type: "secret", Label: "Bot token"},
+	{Name: "chat", Type: "text", Label: "Chat ID"},
+	{Name: "name", Type: "text", Label: "Name in messages"},
+	{Name: "logins", Type: "choice", Label: "SSH logins", Options: []string{alerts.LoginsNew, alerts.LoginsAll, alerts.LoginsOff}},
+	{Name: "quiet", Type: "text", Label: "Quiet addresses"},
+	{Name: "tripwire", Type: "choice", Label: "Tripwire", Options: yesNo},
+}
+
+// adminKeyRe is one public key on one line: what authorized_keys gets. No
+// options in front, so an answer can't sneak in a command= or from=.
+var adminKeyRe = regexp.MustCompile(`^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+/]+={0,3}( [ -~]{0,200})?$`)
+
+// setupConfig is the setup module's answers over what an earlier setup chose.
+// sshd stays as it is here: closing it is ssh-login's, once the key is proved.
+func setupConfig(in map[string]string) (config.Config, error) {
+	cfg, _ := loadState()
+	cfg.Username = in["username"]
+	cfg.DeployPassword = in["password"]
+	if !adminKeyRe.MatchString(in["admin_key"]) {
+		return cfg, errors.New("admin_key: one public key on one line (ssh-ed25519 AAAA… comment)")
+	}
+	cfg.AdminKeySource, cfg.AdminKeyValue = config.AdminKeyPaste, in["admin_key"]
+
+	on := func(name string, into *bool) {
+		if in[name] != "" {
+			*into = in[name] == "yes"
+		}
+	}
+	on("base", &cfg.EnableBaseTuning)
+	on("tailscale", &cfg.InstallTailscale)
+	on("tailscale_ssh", &cfg.TailscaleSSH)
+	on("docker_daemon", &cfg.EnableLogRotation)
+	on("watchtower", &cfg.InstallWatchtower)
+	on("firewall", &cfg.EnableFirewall)
+	on("auto_updates", &cfg.EnableAutoUpdates)
+	on("auto_reboot", &cfg.AutoReboot)
+	on("kernel", &cfg.HardenKernel)
+	on("tripwire", &cfg.Tripwire)
+
+	repos, err := config.ParseGitHubRepos(in["github_repos"])
+	if err != nil {
+		return cfg, err
+	}
+	cfg.GitHubRepos = repos
+
+	if in["hostname"] != "" {
+		cfg.Hostname = in["hostname"]
+	}
+	if in["timezone"] != "" {
+		if !timezoneRe.MatchString(in["timezone"]) {
+			return cfg, errors.New("timezone: a name like Europe/Berlin")
+		}
+		cfg.Timezone = in["timezone"]
+	}
+	if in["swap_gb"] != "" {
+		if cfg.SwapGB, err = strconv.Atoi(in["swap_gb"]); err != nil {
+			return cfg, errors.New("swap_gb: a number of gigabytes")
+		}
+	}
+
+	switch in["portainer"] {
+	case "off":
+		cfg.InstallPortainer = false
+	case "tailnet", "public":
+		cfg.InstallPortainer, cfg.PortainerAccess = true, config.PortainerAccess(in["portainer"])
+	}
+	if err := config.ValidAgentSecret(in["agent_secret"]); err != nil {
+		return cfg, fmt.Errorf("AGENT_SECRET: %w", err)
+	}
+	cfg.AgentSecret = in["agent_secret"]
+
+	switch {
+	case in["caddy"] == "no":
+		cfg.CaddyRepo = ""
+	case in["caddy_repo"] != "":
+		cfg.CaddyRepo = in["caddy_repo"]
+	case cfg.CaddyRepo == "":
+		cfg.CaddyRepo = config.DefaultCaddyRepo
+	}
+	if p := in["projects"]; p != "" {
+		// It's given to the deploy user: never a top-level folder like /opt or /home.
+		if !filepath.IsAbs(p) || !movePathChars.MatchString(p) || strings.Contains(p, "..") || strings.Count(filepath.Clean(p), "/") < 2 {
+			return cfg, errors.New("projects: an absolute folder at least two levels down, like /srv/projects")
+		}
+		cfg.CaddyProjects = filepath.Clean(p)
+	}
+
+	if in["alerts"] == "no" {
+		cfg.EnableAlerts = false
+	} else if in["alerts"] == "yes" {
+		from, err := alertsConfig(map[string]string{"token": in["token"], "chat": in["chat"], "name": in["name"], "logins": in["logins"], "quiet": in["quiet"]})
+		if err != nil {
+			return cfg, err
+		}
+		cfg.EnableAlerts = true
+		cfg.TelegramBotToken, cfg.AlertsChatID = from.TelegramBotToken, from.AlertsChatID
+		cfg.AlertName, cfg.AlertLogins, cfg.AlertQuietFrom = from.AlertName, from.AlertLogins, from.AlertQuietFrom
+		cfg.AlertOnSSHLogin = from.AlertLogins != alerts.LoginsOff
+	}
+
+	// The port sshd answers on now: a program never moves it, and the firewall
+	// must keep it open.
+	cfg.SSHPort = steps.CurrentSSHPort()
+	return cfg, cfg.Validate()
+}
+
+// timezoneRe is the shape of a tz database name: it goes to timedatectl.
+var timezoneRe = regexp.MustCompile(`^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+){0,2}$`)
+
+// sshLoginConfig is the ssh-login module's answers over the setup's: sign-in
+// stays whichever way it is unless an answer says otherwise.
+func sshLoginConfig(in map[string]string) (config.Config, error) {
+	cfg, ok := loadState()
+	if !ok {
+		return cfg, errors.New("this server wasn't set up by forge: it doesn't know the deploy user")
+	}
+	if in["root"] != "" {
+		cfg.DisableRootLogin = in["root"] == "off"
+	}
+	if in["passwords"] != "" {
+		cfg.DisablePassauth = in["passwords"] == "off"
+	}
+	return cfg, nil
+}
+
 var modules = []module{
+	{
+		Name:        "setup",
+		Title:       "Set up the server",
+		Description: "The wizard's whole setup on a fresh server: the deploy user and its key, Docker, Tailscale, the firewall, Caddy, updates and alerts, and machine access for the deploy user. It leaves root and password sign-in as they are: ssh-login closes them, once the new sign-in is proved.",
+		Danger:      true,
+		Waits:       true,
+		Internal:    true, // its questions are a page of the program's own, not a form to generate
+		Inputs:      setupInputs,
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			if !system.HasSystemd() && !system.DryRun {
+				return nil, nil, errors.New("systemd is not running: forge needs it to manage services, timers and sshd")
+			}
+			cfg, err := setupConfig(in)
+			if err != nil {
+				return nil, nil, err
+			}
+			st, ctx := steps.ServerSteps(cfg, in["tailscale_login"] == "yes")
+			if cfg.CaddyProjects != "" {
+				st = append(st, steps.ProjectsFolderStep(cfg.Username, cfg.CaddyProjects))
+			}
+			st = append(st, steps.Step{Name: "Machine access for " + cfg.Username, Run: func(*steps.Context) error { return enableMachineAccess(cfg.Username) }})
+			return st, ctx, nil
+		},
+		after: func(in map[string]string) {
+			if cfg, err := setupConfig(in); err == nil {
+				_ = saveState(cfg)
+			}
+		},
+	},
+	{
+		Name:        "ssh-login",
+		Title:       "Root and password sign-in",
+		Description: "Whether root and passwords can sign in over SSH. Closing them refuses while the deploy user has no key; keep a way in you've tried. Safe to run again.",
+		Danger:      true,
+		Inputs: []moduleInput{
+			{Name: "root", Type: "choice", Label: "Root sign-in", Options: []string{"off", "on"}},
+			{Name: "passwords", Type: "choice", Label: "Password sign-in", Options: []string{"off", "on"}},
+		},
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			cfg, err := sshLoginConfig(in)
+			if err != nil {
+				return nil, nil, err
+			}
+			st, ctx := steps.SSHLoginSteps(cfg)
+			return st, ctx, nil
+		},
+		after: func(in map[string]string) {
+			if cfg, err := sshLoginConfig(in); err == nil {
+				_ = saveState(cfg)
+			}
+		},
+	},
 	{
 		Name:        "tailscale",
 		Title:       "Log in to Tailscale",
@@ -607,32 +816,7 @@ func runMachineAccess(args []string) int {
 			fmt.Println("  usage: sudo forge machine enable [user] — the user deploy.me connects as")
 			return 2
 		}
-		if _, err := system.Output("id", "-u", user); err != nil {
-			fmt.Println("  there's no user " + user + " on this server")
-			return 1
-		}
-		exe, err := os.Executable()
-		if err == nil {
-			exe, err = filepath.EvalSymlinks(exe)
-		}
-		if err == nil {
-			err = rootOnly(exe)
-		}
-		if err != nil {
-			fmt.Println("  Not turning machine mode on: " + err.Error())
-			return 1
-		}
-		tmp := machineSudoers + ".new"
-		if err := os.WriteFile(tmp, []byte(sudoersFor(user, exe)), 0o440); err != nil {
-			fmt.Println("  " + err.Error())
-			return 1
-		}
-		if out, err := system.CombinedOutput("visudo", "-cf", tmp); err != nil {
-			_ = os.Remove(tmp)
-			fmt.Println("  visudo refused the rule: " + strings.TrimSpace(out))
-			return 1
-		}
-		if err := os.Rename(tmp, machineSudoers); err != nil {
+		if err := enableMachineAccess(user); err != nil {
 			fmt.Println("  " + err.Error())
 			return 1
 		}
@@ -641,4 +825,34 @@ func runMachineAccess(args []string) int {
 	}
 	fmt.Println("  usage: sudo forge machine [enable [user] | disable]")
 	return 2
+}
+
+// enableMachineAccess writes the sudo rule for user, checked with visudo.
+func enableMachineAccess(user string) error {
+	if system.DryRun {
+		system.CommandLog = append(system.CommandLog, "write "+machineSudoers+" for "+user)
+		return nil
+	}
+	if _, err := system.Output("id", "-u", user); err != nil {
+		return errors.New("there's no user " + user + " on this server")
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.EvalSymlinks(exe)
+	}
+	if err == nil {
+		err = rootOnly(exe)
+	}
+	if err != nil {
+		return errors.New("not turning machine mode on: " + err.Error())
+	}
+	tmp := machineSudoers + ".new"
+	if err := os.WriteFile(tmp, []byte(sudoersFor(user, exe)), 0o440); err != nil {
+		return err
+	}
+	if out, err := system.CombinedOutput("visudo", "-cf", tmp); err != nil {
+		_ = os.Remove(tmp)
+		return errors.New("visudo refused the rule: " + strings.TrimSpace(out))
+	}
+	return os.Rename(tmp, machineSudoers)
 }

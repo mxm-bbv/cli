@@ -34,9 +34,12 @@ var sshSocketGenerators = []string{
 // (Ubuntu 20.04+, Debian 11+).
 var sshdIncludeRe = regexp.MustCompile(`(?mi)^[ \t]*Include[ \t]+/etc/ssh/sshd_config\.d/\*\.conf[ \t]*$`)
 
+// sshHardeningName names the step that closes sshd (ServerSteps leaves it out).
+const sshHardeningName = "SSH hardening: disable root / passwords, restart sshd"
+
 func sshHardeningStep() Step {
 	return Step{
-		Name: "SSH hardening: disable root / passwords, restart sshd",
+		Name: sshHardeningName,
 		Skip: func(c *Context) bool {
 			return !c.Cfg.DisableRootLogin && !c.Cfg.DisablePassauth && sshPort(c.Cfg.SSHPort) == 22
 		},
@@ -239,6 +242,34 @@ func verifyEffectiveSSHD(cfg config.Config) error {
 			"      Inspect with `sshd -T` and the files in /etc/ssh/sshd_config.d/", strings.Join(bad, "\n      "))
 	}
 	return nil
+}
+
+// SSHLogin is who sshd lets in right now, as `sshd -T` says: forge's status
+// reports it. Empty without root, or without an sshd to ask.
+type SSHLogin struct {
+	Root      string   `json:"root"`      // PermitRootLogin: no, yes, prohibit-password…
+	Passwords string   `json:"passwords"` // PasswordAuthentication: no or yes
+	Users     []string `json:"users"`     // AllowUsers; empty is everyone
+}
+
+// EffectiveSSHLogin asks sshd.
+func EffectiveSSHLogin() SSHLogin {
+	login := SSHLogin{Users: []string{}}
+	out, err := system.Output("sshd", "-T")
+	if err != nil {
+		return login
+	}
+	eff := parseSSHDT(out)
+	if v := eff["permitrootlogin"]; len(v) == 1 {
+		login.Root = v[0]
+	}
+	if v := eff["passwordauthentication"]; len(v) == 1 {
+		login.Passwords = v[0]
+	}
+	if v := eff["allowusers"]; v != nil {
+		login.Users = v
+	}
+	return login
 }
 
 // parseSSHDT parses `sshd -T` output (lowercase "key value" lines) into
