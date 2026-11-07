@@ -184,6 +184,7 @@ func run(logline, name string, args []string, stdin string, extraEnv []string, o
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = workDir(name)
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)
 	}
@@ -375,18 +376,32 @@ func tail(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// workDir is where a command starts: runuser's in "/", since forge's own folder
+// may be one that user can't enter (/root, when root signs in), and docker
+// compose and git refuse to start there. "" is forge's own.
+func workDir(name string) string {
+	if name == "runuser" {
+		return "/"
+	}
+	return ""
+}
+
 // Output runs a read-only query command and returns its trimmed stdout. Like
 // the other read-only helpers it runs even in dry-run and is not recorded in
 // CommandLog — it must never be used for anything that changes the host.
 func Output(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = workDir(name)
+	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
 }
 
 // CombinedOutput is Output with stderr included — for tools that answer on
 // stderr, like `ssh -T`. Read-only, like Output.
 func CombinedOutput(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = workDir(name)
+	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 

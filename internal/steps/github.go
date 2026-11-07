@@ -40,10 +40,10 @@ func Cleanup() {
 func githubStep() Step {
 	return Step{
 		Name: "GitHub: read-only deploy keys for your repos",
-		Skip: func(c *Context) bool { return len(c.Cfg.GitHubRepos) == 0 && c.Cfg.CaddyRepo == "" },
+		Skip: func(c *Context) bool { return len(c.Cfg.GitHubRepos) == 0 && !c.Cfg.CaddyFromRepo() },
 		Run: func(c *Context) error {
 			err := setupGitHubRepos(c)
-			if err != nil && len(c.Cfg.GitHubRepos) == 0 && c.Cfg.CaddyRepo != "" {
+			if err != nil && len(c.Cfg.GitHubRepos) == 0 && c.Cfg.CaddyFromRepo() {
 				// Only the caddy repo was at stake: its step falls back to the
 				// built-in setup, so GitHub being unreachable isn't fatal.
 				c.Notes = append(c.Notes, "⚠ GitHub: "+firstLine(err.Error()))
@@ -81,7 +81,7 @@ func setupGitHubRepos(c *Context) error {
 	}
 
 	repos := slices.Clone(cfg.GitHubRepos)
-	if r := cfg.CaddyRepo; r != "" && !repoIsPublic(r) && !slices.ContainsFunc(repos, func(s string) bool { return strings.EqualFold(s, r) }) {
+	if r := cfg.CaddyRepo; cfg.CaddyFromRepo() && !repoIsPublic(r) && !slices.ContainsFunc(repos, func(s string) bool { return strings.EqualFold(s, r) }) {
 		repos = append(repos, r) // the caddy step clones it with this key
 	}
 	if len(repos) == 0 {

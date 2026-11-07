@@ -233,6 +233,12 @@ func TestSetupAnswers(t *testing.T) {
 	if off, err := setupConfig(setupAnswers(map[string]string{"caddy": "no"})); err != nil || off.CaddyRepo != "" {
 		t.Errorf("caddy off: %q, %v", off.CaddyRepo, err)
 	}
+	if pkg, err := setupConfig(setupAnswers(map[string]string{"caddy": "yes", "caddy_package": "UEsDBA=="})); err != nil || pkg.CaddyRepo != config.CaddyPackage || pkg.CaddyPackageData != "UEsDBA==" {
+		t.Errorf("caddy from a package: %q, %v", pkg.CaddyRepo, err)
+	}
+	if own, err := setupConfig(setupAnswers(map[string]string{"caddy": "yes"})); err != nil || own.CaddyRepo != config.CaddyBuiltin {
+		t.Errorf("caddy with no repo named is its image: %q, %v", own.CaddyRepo, err)
+	}
 
 	for name, more := range map[string]map[string]string{
 		"root as the deploy user":       {"username": "root"},
@@ -246,6 +252,7 @@ func TestSetupAnswers(t *testing.T) {
 		"a projects folder climbing up": {"projects": "/srv/../etc"},
 		"a top-level projects folder":   {"projects": "/opt"},
 		"a repo that isn't one":         {"github_repos": "not a repo"},
+		"a caddy repo that isn't one":   {"caddy_repo": "not a repo"},
 		"a tailnet agent, no tailscale": {"tailscale": "no", "portainer": "tailnet"},
 		"a short AGENT_SECRET":          {"agent_secret": "short"},
 		"alerts with no bot":            {"alerts": "yes"},

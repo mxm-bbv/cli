@@ -173,3 +173,15 @@ func TestIsDebianLikeUsesWholeWords(t *testing.T) {
 		t.Error("Pop!_OS must count as Debian-like")
 	}
 }
+
+// TestAnotherUsersCommandsStartWhereTheyCanEnter: root's home is closed to the
+// deploy user, and docker compose and git refuse to start in a folder they can't
+// enter, so runuser's commands start in "/". The rest stay where forge is.
+func TestAnotherUsersCommandsStartWhereTheyCanEnter(t *testing.T) {
+	if got := workDir("runuser"); got != "/" {
+		t.Errorf("runuser starts in %q", got)
+	}
+	if got := workDir("install"); got != "" {
+		t.Errorf("install starts in %q", got)
+	}
+}

@@ -50,8 +50,10 @@ type Config struct {
 	// GenerateGitHubKey is the older manual path: one key the user pastes
 	// into GitHub themselves.
 	GitHubRepos []string `yaml:"github_repos,omitempty"`
-	// CaddyRepo is the operator's Caddy setup (a repo with a
-	// docker-compose.prod.yml), run as the box's web server. "" = none.
+	// CaddyRepo is the box's web server: CaddyPackage (a whole Caddy setup a
+	// program handed over, no repo access or keys here), CaddyBuiltin (forge's
+	// own from the official image, the same), the operator's own repo with a
+	// docker-compose.prod.yml, or "" for none.
 	CaddyRepo string `yaml:"caddy_repo"`
 	// CaddyProjects is the folder a new Caddy setup mounts as /projects (its
 	// sites' file roots); empty is the deploy user's ~/projects.
@@ -107,6 +109,7 @@ type Config struct {
 	AlertDiskPercent int      `yaml:"alert_disk_percent"` // root fs usage % to warn at (default 85)
 
 	// Runtime-only (not serialised)
+	CaddyPackageData string `yaml:"-"` // base64 of the .tar.gz a program sent for CaddyPackage
 	DeployPassword   string `yaml:"-"`
 	TailscaleAuthKey string `yaml:"-"` // secret: from $TS_AUTHKEY, never written to disk
 	// AgentSecret is the Portainer Agent's AGENT_SECRET. A Portainer Server
@@ -122,7 +125,7 @@ func Default() Config {
 		Username:          "deploy",
 		AdminKeySource:    AdminKeyPaste,
 		GitHubKeyComment:  "deploy@server",
-		CaddyRepo:         DefaultCaddyRepo,
+		CaddyRepo:         CaddyBuiltin,
 		Timezone:          "UTC",
 		SwapGB:            2,
 		SSHPort:           22,
@@ -255,7 +258,7 @@ func (c Config) Validate() error {
 			return errors.New("portainer_access tailnet needs install_tailscale")
 		}
 	}
-	if c.CaddyRepo != "" {
+	if c.CaddyFromRepo() {
 		if err := ValidGitHubRepo(c.CaddyRepo); err != nil {
 			return fmt.Errorf("caddy_repo %q: %w", c.CaddyRepo, err)
 		}
@@ -313,8 +316,19 @@ func ValidAlertName(name string) error {
 	return nil
 }
 
-// DefaultCaddyRepo is the author's shared Caddy setup, offered by the wizard.
-const DefaultCaddyRepo = "MR-Studio-KZ-UA/caddy-core"
+// CaddyBuiltin as CaddyRepo is forge's own Caddy setup: nothing to clone, so no
+// repo access and no deploy key. It's what the wizard offers first.
+const CaddyBuiltin = "builtin"
+
+// CaddyPackage as CaddyRepo is a whole Caddy setup that arrived as a package: a
+// program (deploy.me) fetched it and sends it along, so the server needs no repo
+// access and no deploy key. It lives in ~/caddy-server.
+const CaddyPackage = "package"
+
+// CaddyFromRepo reports whether Caddy comes from the operator's own repo.
+func (c Config) CaddyFromRepo() bool {
+	return c.CaddyRepo != "" && c.CaddyRepo != CaddyBuiltin && c.CaddyRepo != CaddyPackage
+}
 
 // StatePath is where a provisioning run keeps its answers (secrets excluded),
 // so later commands — `forge tailscale`, `forge github` — act on the same

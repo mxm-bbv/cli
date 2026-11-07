@@ -48,7 +48,7 @@ hostname overrides, snap-packaged Docker, and LXC/OpenVZ containers (no swap).
 | **Updates** | unattended-upgrades for automatic security patches; `needrestart` restarts services still running old libraries; optional reboot at 04:00 when a kernel fix needs it |
 | **Alerts**  | Telegram push (optional): daily `forge audit`, host-health warnings (load/disk/reboot), SSH logins. Each message starts with the server's name, so several servers can share one bot. A user's first login from an address each day is said, the rest — and logins from quiet addresses (deploy.me's, the tailnet) — go to a daily summary; more than 12 messages in an hour wait for it too, never the tripwire or the audit |
 | **Tripwire** | With alerts: every minute, a Telegram alarm on what intruders change to stay — new SSH keys (and `command=`/`from=` options), accounts, sudo rights, sshd auth policy, listening ports, systemd units, cron jobs, startup files (`ld.so.preload`, `.bashrc`…), SUID/SGID files, kernel taint from foreign modules, container images. Each change is reported once; forge's own changes never alarm |
-| **Web server** | Your Caddy setup (`caddy_repo`, a repo with `docker-compose.prod.yml`) on :80/:443 — a private repo is cloned with its own read-only deploy key; creates the `proxy-network` network and `PROJECTS_PATH` |
+| **Web server** | Caddy on :80/:443 from its official image (pinned, like every image here): nothing to clone, no keys. Sites go in `~/caddy/core/prod/caddy/configs/*.caddy`. A program can send a whole Caddy setup as a package instead (`forge run caddy` with `package`, `forge run setup` with `caddy_package`: deploy.me does), unpacked into `~/caddy-server`, again with no repo access or keys here. Creates the `proxy-network` network and `PROJECTS_PATH`. Your own repo with a `docker-compose.prod.yml` (`caddy_repo`) instead, if you want one: a private repo is cloned with its own read-only deploy key |
 | **Base**    | hostname (+ `/etc/hosts`, kept across cloud-init reboots), timezone, NTP, swap file, journal capped at 500 MB, operator utilities (htop, ncdu, jq, tmux…) |
 | **Audit**   | `sudo forge audit` — read-only scan for rootkit/proxyjacking IOCs and risky Docker exposure |
 
@@ -68,7 +68,7 @@ Beyond the provisioning wizard, `forge` doubles as an operations tool:
 | `sudo forge agent-remove` | Take the Portainer Agent off this server — the container, its `AGENT_SECRET` and port 9001 in the container firewall — once its containers are managed over SSH instead (deploy.me). `sudo forge agent-secret` brings it back. `--yes` skips the question |
 | `sudo forge tailscale` | Log in to Tailscale (QR code) and start the tailnet-only Portainer Agent. Safe to re-run |
 | `sudo forge github owner/repo …` | Add read-only deploy keys for more repos (one-time code on your phone) |
-| `sudo forge caddy [owner/repo]` | Install or update the Caddy web server from your repo |
+| `sudo forge caddy [owner/repo]` | Install or update the Caddy web server: to the image this forge pins, or from your own repo |
 | `sudo forge ssh tailnet-only` | **Optional**: close SSH to the internet, so only Tailscale reaches it. Refuses unless you're connected over Tailscale right now and the node key never expires; `sudo forge ssh public` reopens it, `sudo forge ssh` shows the state |
 | `sudo forge tripwire --show` | What the tripwire watches right now (`--baseline` re-records it) |
 | `sudo forge update images` | Re-pull pinned images and recreate drifted agent/watchtower (the deliberate counterpart to monitor-only Watchtower) |

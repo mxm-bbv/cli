@@ -51,46 +51,50 @@ func TestDryRunAllSteps(t *testing.T) {
 		"url.git@github-mxm-bbv--app:mxm-bbv/app.git.insteadOf git@github.com:mxm-bbv/app.git", // plain clone URLs use it
 		"gh auth login --web (one-time code)",                                                  // device login, approved on a phone
 		"gh repo deploy-key add /home/deploy/.ssh/github-mxm-bbv--app.pub --repo mxm-bbv/app",  // read-only by default
-		"gh auth logout",                              // the login is thrown away
-		"tailscale up --auth-key=<hidden> --ssh",      // tailnet join (key redacted)
-		"<tailnet-ip>:9001:9001",                      // agent bound to the tailnet, not 0.0.0.0
-		"-e AGENT_SECRET",                             // agent pairing secret (value via env)
-		portainerAgentImage,                           // portainer (pinned version)
-		watchtowerImage,                               // watchtower (pinned version)
-		"--monitor-only",                              // watchtower never auto-replaces containers
-		"no-new-privileges",                           // containers hardened
-		"ufw allow 2222/tcp",                          // firewall honours ssh port
-		"ufw allow in on tailscale0",                  // tailnet is a trusted admin interface
-		"ufw allow 22/tcp",                            // current SSH port stays open until sshd moves
-		"jail.d/sshd.local",                           // fail2ban jail
-		"fail2ban-client -t",                          // jail validated before restart
-		"forge-docker-user.service",                   // DOCKER-USER rules (docker can't bypass UFW)
-		"forge-audit.timer",                           // scheduled audit -> Telegram
-		"forge-health.timer",                          // scheduled health checks
-		"alerts.env",                                  // secret alert config written
-		"20auto-upgrades",                             // unattended-upgrades config
-		"sysctl -q -e -p /etc/sysctl.d/90-forge.conf", // kernel & network hardening
-		"journald.conf.d/90-forge.conf",               // journal capped on a small disk
-		"apt.conf.d/52forge-auto-reboot",              // kernel fixes take effect
-		"needrestart/conf.d/90-forge.conf",            // outdated services restarted
-		"sshd -t",                                     // sshd validated before restart
-		"sshd -T (verify effective settings)",         // effective config checked (drop-in overrides)
-		"systemctl restart ssh",                       // sshd restarted last
-		"connect 127.0.0.1:2222, expect SSH banner",   // new port verified before closing the old one
-		"ufw delete allow 22/tcp",                     // transitional SSH rule removed
-		"pam.d/sshd",                                  // SSH-login alerts via pam_exec
-		"ssh-login-notify.sh",                         // login hook script
-		"tripwire --baseline",                         // tripwire baseline = the finished server
-		"forge-tripwire.timer",                        // checked every minute
-		"/home/deploy/.ssh/github-mr-studio-kz-ua--caddy-core.pub --repo MR-Studio-KZ-UA/caddy-core", // private caddy repo gets a deploy key
-		"git clone --quiet git@github.com:MR-Studio-KZ-UA/caddy-core.git /home/deploy/caddy-core",    // …and is cloned with it
-		"write /home/deploy/caddy-core/.env",                                        // PROJECTS_PATH
-		"-f /home/deploy/caddy-core/docker-compose.prod.yml up -d --remove-orphans", // the web server runs
+		"gh auth logout",                                   // the login is thrown away
+		"tailscale up --auth-key=<hidden> --ssh",           // tailnet join (key redacted)
+		"<tailnet-ip>:9001:9001",                           // agent bound to the tailnet, not 0.0.0.0
+		"-e AGENT_SECRET",                                  // agent pairing secret (value via env)
+		portainerAgentImage,                                // portainer (pinned version)
+		watchtowerImage,                                    // watchtower (pinned version)
+		"--monitor-only",                                   // watchtower never auto-replaces containers
+		"no-new-privileges",                                // containers hardened
+		"ufw allow 2222/tcp",                               // firewall honours ssh port
+		"ufw allow in on tailscale0",                       // tailnet is a trusted admin interface
+		"ufw allow 22/tcp",                                 // current SSH port stays open until sshd moves
+		"jail.d/sshd.local",                                // fail2ban jail
+		"fail2ban-client -t",                               // jail validated before restart
+		"forge-docker-user.service",                        // DOCKER-USER rules (docker can't bypass UFW)
+		"forge-audit.timer",                                // scheduled audit -> Telegram
+		"forge-health.timer",                               // scheduled health checks
+		"alerts.env",                                       // secret alert config written
+		"20auto-upgrades",                                  // unattended-upgrades config
+		"sysctl -q -e -p /etc/sysctl.d/90-forge.conf",      // kernel & network hardening
+		"journald.conf.d/90-forge.conf",                    // journal capped on a small disk
+		"apt.conf.d/52forge-auto-reboot",                   // kernel fixes take effect
+		"needrestart/conf.d/90-forge.conf",                 // outdated services restarted
+		"sshd -t",                                          // sshd validated before restart
+		"sshd -T (verify effective settings)",              // effective config checked (drop-in overrides)
+		"systemctl restart ssh",                            // sshd restarted last
+		"connect 127.0.0.1:2222, expect SSH banner",        // new port verified before closing the old one
+		"ufw delete allow 22/tcp",                          // transitional SSH rule removed
+		"pam.d/sshd",                                       // SSH-login alerts via pam_exec
+		"ssh-login-notify.sh",                              // login hook script
+		"tripwire --baseline",                              // tripwire baseline = the finished server
+		"forge-tripwire.timer",                             // checked every minute
+		"write /home/deploy/caddy/docker-compose.prod.yml", // forge's own Caddy setup
+		"write /home/deploy/caddy/.env",                    // PROJECTS_PATH
+		"-f /home/deploy/caddy/docker-compose.prod.yml up -d --remove-orphans", // the web server runs
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(log, want) {
 			t.Errorf("expected command log to contain %q\n--- log ---\n%s", want, log)
 		}
+	}
+
+	// Caddy comes from its image: no clone, and no deploy key for it.
+	if strings.Contains(log, "git clone") || strings.Contains(log, "caddy-core") {
+		t.Errorf("forge's own Caddy reached for a repo:\n%s", log)
 	}
 
 	// Secrets must never appear in the command log.
@@ -224,7 +228,7 @@ func TestSkipDisabledFeatures(t *testing.T) {
 		"Kernel & network hardening (sysctl)",
 		"GitHub: read-only deploy keys for your repos",
 		"Tripwire: alert on what intruders change",
-		"Caddy web server (your caddy repo)",
+		"Caddy web server",
 	} {
 		if !skipped[name] {
 			t.Errorf("expected step %q to be skipped when its feature is disabled", name)

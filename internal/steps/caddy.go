@@ -6,20 +6,23 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/system"
 )
 
-// caddyNetwork is the external Docker network the caddy-core compose file
-// expects; app containers join it so Caddy can reach them by name.
+// caddyNetwork is the external Docker network the Caddy compose file expects;
+// app containers join it so Caddy can reach them by name.
 const caddyNetwork = "proxy-network"
 
-// caddyStep installs the operator's own Caddy setup — a git repo with a
-// docker-compose.prod.yml (caddy-core) — as the box's web server on :80/:443.
-// A private repo is cloned with its read-only deploy key (githubStep runs
-// first and covers it). Re-running pulls the repo and re-ups the stack.
+// caddyStep puts the box's web server on :80/:443: a whole setup a program sent
+// as a package, forge's own from the official image (either way nothing to clone,
+// no repo access, no keys), or the operator's own git repo with a
+// docker-compose.prod.yml, a private one cloned with its read-only deploy key
+// (githubStep runs first and covers it). Re-running unpacks the package again,
+// moves forge's own to the image this forge pins, or pulls the repo, and re-ups the stack.
 func caddyStep() Step {
 	return Step{
-		Name: "Caddy web server (your caddy repo)",
+		Name: "Caddy web server",
 		Skip: func(c *Context) bool { return c.Cfg.CaddyRepo == "" },
 		Run: func(c *Context) error {
 			cfg := c.Cfg
@@ -27,11 +30,22 @@ func caddyStep() Step {
 			dir := caddyDir(cfg.HomeDir(), cfg.CaddyRepo)
 			compose := dir + "/docker-compose.prod.yml"
 
-			if err := checkoutCaddy(c, dir); err != nil {
-				return err
+			switch {
+			case cfg.CaddyFromRepo():
+				if err := checkoutCaddy(c, dir); err != nil {
+					return err
+				}
+			case cfg.CaddyRepo == config.CaddyPackage:
+				if err := installCaddyPackage(user, dir, cfg.CaddyPackageData); err != nil {
+					return err
+				}
+			default:
+				if err := writeBuiltinCaddy(user, dir); err != nil {
+					return err
+				}
 			}
 			if !system.DryRun && !system.FileExists(compose) {
-				return fmt.Errorf("%s has no docker-compose.prod.yml — is it the caddy repo?", cfg.CaddyRepo)
+				return fmt.Errorf("%s has no docker-compose.prod.yml — is it a Caddy setup?", dir)
 			}
 
 			// PROJECTS_PATH is mounted into Caddy as /projects (static files,
@@ -70,8 +84,8 @@ func caddyStep() Step {
 			}
 
 			sites := dir + "/core/prod/caddy/configs"
-			c.Notes = append(c.Notes, fmt.Sprintf("Caddy serves :80/:443 from %s. A new site: a *.caddy file in %s (templates in %s/examples), then  docker exec main-server caddy reload --config /etc/caddy/Caddyfile. App containers join the %q network.",
-				dir, sites, dir, caddyNetwork))
+			c.Notes = append(c.Notes, fmt.Sprintf("Caddy serves :80/:443 from %s. A new site: a *.caddy file in %s, then  docker exec main-server caddy reload --config /etc/caddy/Caddyfile. App containers join the %q network.",
+				dir, sites, caddyNetwork))
 			return nil
 		},
 	}
@@ -127,10 +141,14 @@ func checkoutCaddy(c *Context, dir string) error {
 // caddyBuiltinMarker marks forge's built-in copy of the caddy layout.
 const caddyBuiltinMarker = ".forge-builtin"
 
-// The built-in copy mirrors caddy-core's prod layout: same image, container
-// name, network, mounts and configs/*.caddy import.
+// caddyBuiltinKept are the built-in files a re-run leaves as they are: the
+// operator may have added to them. The compose file is forge's, and carries the pin.
+var caddyBuiltinKept = map[string]bool{"core/prod/caddy/Caddyfile": true}
+
+// The built-in setup has the layout a repo of the operator's would (caddy-core's
+// prod one): same container name, network, mounts and configs/*.caddy import.
 var builtinCaddyFiles = map[string]string{
-	caddyBuiltinMarker: "forge's built-in Caddy setup; replaced by the git clone on `sudo forge caddy`\n",
+	caddyBuiltinMarker: "forge's own Caddy setup: `sudo forge caddy` moves it to the image this forge pins\n",
 	"docker-compose.prod.yml": `networks:
   proxy-network:
     external: true
@@ -141,7 +159,7 @@ volumes:
 
 services:
   caddy:
-    image: caddy:2.11.4-alpine
+    image: ` + caddyImage + `
     container_name: main-server
     restart: always
     ports:
@@ -174,6 +192,9 @@ func writeBuiltinCaddy(user, dir string) error {
 		if _, err := system.Run("install", "-d", "-o", user, "-g", user, p[:strings.LastIndex(p, "/")]); err != nil {
 			return err
 		}
+		if caddyBuiltinKept[name] && system.FileExists(p) {
+			continue
+		}
 		if err := system.WriteFile(p, body, 0o644); err != nil {
 			return err
 		}
@@ -182,8 +203,15 @@ func writeBuiltinCaddy(user, dir string) error {
 	return err
 }
 
-// caddyDir is where the repo is checked out: ~/<repo name>.
+// caddyDir is where its setup lives: ~/caddy-server for a package, ~/caddy for
+// forge's own, else ~/<repo name>.
 func caddyDir(home, repo string) string {
+	switch repo {
+	case config.CaddyPackage:
+		return home + "/caddy-server"
+	case config.CaddyBuiltin:
+		return home + "/caddy"
+	}
 	return home + "/" + repo[strings.LastIndex(repo, "/")+1:]
 }
 
