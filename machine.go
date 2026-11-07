@@ -96,7 +96,8 @@ var setupInputs = []moduleInput{
 	{Name: "portainer", Type: "choice", Label: "Portainer Agent", Options: []string{"off", "tailnet", "public"}},
 	{Name: "agent_secret", Type: "secret", Label: "AGENT_SECRET"},
 	{Name: "caddy", Type: "choice", Label: "Caddy web server", Options: yesNo},
-	{Name: "caddy_repo", Type: "text", Label: "Caddy repository"},
+	{Name: "caddy_repo", Type: "text", Label: "Your own Caddy repository", Help: "optional: empty is the official image, with no repository or keys"},
+	{Name: "caddy_package", Type: "text", Label: "A Caddy setup as a package", Help: "base64 of a .tar.gz with its docker-compose.prod.yml, unpacked into ~/caddy-server: no repository or keys"},
 	{Name: "projects", Type: "text", Label: "Projects folder", Help: "made for the deploy user, and mounted as /projects in a new Caddy"},
 	{Name: "watchtower", Type: "choice", Label: "Watchtower", Options: yesNo},
 	{Name: "firewall", Type: "choice", Label: "Firewall", Options: yesNo},
@@ -178,10 +179,12 @@ func setupConfig(in map[string]string) (config.Config, error) {
 	switch {
 	case in["caddy"] == "no":
 		cfg.CaddyRepo = ""
+	case in["caddy_package"] != "":
+		cfg.CaddyRepo, cfg.CaddyPackageData = config.CaddyPackage, in["caddy_package"]
 	case in["caddy_repo"] != "":
 		cfg.CaddyRepo = in["caddy_repo"]
 	case cfg.CaddyRepo == "":
-		cfg.CaddyRepo = config.DefaultCaddyRepo
+		cfg.CaddyRepo = config.CaddyBuiltin
 	}
 	if p := in["projects"]; p != "" {
 		// It's given to the deploy user: never a top-level folder like /opt or /home.
@@ -359,9 +362,10 @@ var modules = []module{
 	{
 		Name:        "caddy",
 		Title:       "Caddy web server",
-		Description: "Installs or updates the Caddy setup from your repository on :80/:443, with the proxy-network its sites reach containers on.",
+		Description: "Installs or updates Caddy on :80/:443, with the proxy-network its sites reach containers on: a whole Caddy setup sent as a package, else the official image. No repository or keys needed, unless you name a repository of your own.",
 		Inputs: []moduleInput{
-			{Name: "repo", Type: "text", Label: "Caddy repository", Help: "owner/repo with a docker-compose.prod.yml; empty keeps the one set up before"},
+			{Name: "repo", Type: "text", Label: "Your own Caddy repository", Help: "optional: owner/repo with a docker-compose.prod.yml. Empty keeps what's set up, or the official image"},
+			{Name: "package", Type: "text", Label: "A Caddy setup as a package", Help: "base64 of a .tar.gz with its docker-compose.prod.yml, unpacked into ~/caddy-server: no repository or keys"},
 			{Name: "projects", Type: "text", Label: "Projects folder", Help: "mounted as /projects for the sites' files, on a new setup; empty is the deploy user's ~/projects"},
 		},
 		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
@@ -373,21 +377,28 @@ var modules = []module{
 				cfg.CaddyProjects = filepath.Clean(p)
 			}
 			switch {
+			case in["package"] != "":
+				cfg.CaddyRepo, cfg.CaddyPackageData = config.CaddyPackage, in["package"]
 			case in["repo"] != "":
 				cfg.CaddyRepo = in["repo"]
 			case cfg.CaddyRepo == "":
-				cfg.CaddyRepo = config.DefaultCaddyRepo
+				cfg.CaddyRepo = config.CaddyBuiltin
 			}
-			if err := config.ValidGitHubRepo(cfg.CaddyRepo); err != nil {
-				return nil, nil, fmt.Errorf("%s: %w", cfg.CaddyRepo, err)
+			if cfg.CaddyFromRepo() {
+				if err := config.ValidGitHubRepo(cfg.CaddyRepo); err != nil {
+					return nil, nil, fmt.Errorf("%s: %w", cfg.CaddyRepo, err)
+				}
 			}
 			st, ctx := steps.CaddySteps(cfg)
 			return st, ctx, nil
 		},
 		after: func(in map[string]string) {
-			if saved, ok := loadState(); ok && (in["repo"] != "" || in["projects"] != "") {
+			if saved, ok := loadState(); ok && (in["repo"] != "" || in["package"] != "" || in["projects"] != "") {
 				if in["repo"] != "" {
 					saved.CaddyRepo = in["repo"]
+				}
+				if in["package"] != "" {
+					saved.CaddyRepo = config.CaddyPackage
 				}
 				if in["projects"] != "" {
 					saved.CaddyProjects = filepath.Clean(in["projects"])

@@ -98,11 +98,13 @@ func runCaddy(args []string) int {
 	if len(args) > 0 {
 		cfg.CaddyRepo = args[0]
 	} else if cfg.CaddyRepo == "" {
-		cfg.CaddyRepo = config.DefaultCaddyRepo
+		cfg.CaddyRepo = config.CaddyBuiltin
 	}
-	if err := config.ValidGitHubRepo(cfg.CaddyRepo); err != nil {
-		ui.Println(ui.StyleErr.Render("  " + cfg.CaddyRepo + ": " + err.Error() + "\n  usage: sudo forge caddy [owner/repo]"))
-		return 2
+	if cfg.CaddyFromRepo() {
+		if err := config.ValidGitHubRepo(cfg.CaddyRepo); err != nil {
+			ui.Println(ui.StyleErr.Render("  " + cfg.CaddyRepo + ": " + err.Error() + "\n  usage: sudo forge caddy [owner/repo]"))
+			return 2
+		}
 	}
 	logPath := openLog(false)
 	st, ctx := steps.CaddySteps(cfg)

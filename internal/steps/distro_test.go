@@ -593,13 +593,100 @@ func TestCaddyFallsBackWithoutGitHub(t *testing.T) {
 	}
 }
 
+// TestCaddyFromItsImageNeedsNoGitHub: forge's own setup clones nothing, asks
+// GitHub nothing, and runs the image the pins name.
+func TestCaddyFromItsImageNeedsNoGitHub(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	cfg := config.Default()
+	cfg.Username = "deploy"
+	if cfg.CaddyRepo != config.CaddyBuiltin || cfg.CaddyFromRepo() {
+		t.Fatalf("the default: %q", cfg.CaddyRepo)
+	}
+	c := &Context{Cfg: cfg}
+	if s := githubStep(); !s.Skip(c) {
+		t.Error("the GitHub step runs for a Caddy with no repo")
+	}
+	if err := caddyStep().Run(c); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	for _, want := range []string{"write /home/deploy/caddy/docker-compose.prod.yml", "write /home/deploy/caddy/core/prod/caddy/Caddyfile", "/home/deploy/caddy/docker-compose.prod.yml up -d --remove-orphans"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("missing %q:\n%s", want, log)
+		}
+	}
+	for _, not := range []string{"git ", "gh ", "github"} {
+		if strings.Contains(log, not) {
+			t.Errorf("it reached for %q:\n%s", not, log)
+		}
+	}
+	if !strings.Contains(builtinCaddyFiles["docker-compose.prod.yml"], "image: "+caddyImage+"\n") {
+		t.Errorf("the compose file doesn't run the pin %s", caddyImage)
+	}
+	if strings.HasSuffix(caddyImage, ":latest") || !strings.Contains(caddyImage, ":") {
+		t.Errorf("not pinned: %s", caddyImage)
+	}
+}
+
+// TestCaddyFromYourOwnRepo: a repo named instead gets what it always did: a
+// private one its deploy key, then a clone, and that repo's compose file.
+func TestCaddyFromYourOwnRepo(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	cfg := config.Default()
+	cfg.Username, cfg.CaddyRepo = "deploy", "MR-Studio-KZ-UA/caddy-core"
+	c := &Context{Cfg: cfg}
+	if s := githubStep(); s.Skip(c) {
+		t.Error("a private repo needs its deploy key")
+	}
+	if err := githubStep().Run(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := caddyStep().Run(c); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	for _, want := range []string{
+		"/home/deploy/.ssh/github-mr-studio-kz-ua--caddy-core.pub --repo MR-Studio-KZ-UA/caddy-core",
+		"git clone --quiet git@github.com:MR-Studio-KZ-UA/caddy-core.git /home/deploy/caddy-core",
+		"write /home/deploy/caddy-core/.env",
+		"-f /home/deploy/caddy-core/docker-compose.prod.yml up -d --remove-orphans",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("missing %q:\n%s", want, log)
+		}
+	}
+}
+
+// TestCaddyRerunKeepsWhatWasAdded: running it again moves the compose file to
+// the pin and leaves a Caddyfile someone added to.
+func TestCaddyRerunKeepsWhatWasAdded(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false)
+	dir := t.TempDir()
+	if err := os.MkdirAll(dir+"/core/prod/caddy", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/core/prod/caddy/Caddyfile", []byte("{ email me@example.com }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBuiltinCaddy("deploy", dir); err != nil {
+		t.Fatal(err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	if strings.Contains(log, "write "+dir+"/core/prod/caddy/Caddyfile") {
+		t.Errorf("the Caddyfile was written over:\n%s", log)
+	}
+	if !strings.Contains(log, "write "+dir+"/docker-compose.prod.yml") {
+		t.Errorf("the compose file wasn't moved to the pin:\n%s", log)
+	}
+}
+
 // TestCaddyMountsTheProjectsFolderItIsGiven: a server whose projects live in
 // /srv/projects (deploy.me's moves keep the folder) gets Caddy mounting that,
 // so a site's file roots under /projects resolve there too.
 func TestCaddyMountsTheProjectsFolderItIsGiven(t *testing.T) {
 	dryRunAs(t, ubuntuNoble, false)
 	cfg := config.Default()
-	cfg.Username, cfg.CaddyRepo, cfg.CaddyProjects = "deploy", config.DefaultCaddyRepo, "/srv/projects"
+	cfg.Username, cfg.CaddyRepo, cfg.CaddyProjects = "deploy", config.CaddyBuiltin, "/srv/projects"
 	if err := caddyStep().Run(&Context{Cfg: cfg}); err != nil {
 		t.Fatal(err)
 	}

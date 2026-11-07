@@ -47,6 +47,10 @@ const (
 	// which Docker Engine 29+ rejects ("client version 1.25 is too old") — it
 	// crash-loops on any fresh install. The fork keeps the same flags.
 	watchtowerImage = "nickfedor/watchtower:1.23.2"
+
+	// Caddy's official image, for forge's own setup (config.CaddyBuiltin).
+	// `sudo forge caddy` moves a server to the pin of its forge.
+	caddyImage = "caddy:2.11.4-alpine"
 )
 
 // ValidUsername reports whether name is a safe Linux username. The username

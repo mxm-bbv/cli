@@ -21,7 +21,10 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	src := string(cfg.AdminKeySource)
 	pmode := string(cfg.PortainerAccess)
 	repos := strings.Join(cfg.GitHubRepos, ", ")
-	installCaddy, caddyRepo := cfg.CaddyRepo != "", cmp.Or(cfg.CaddyRepo, config.DefaultCaddyRepo)
+	installCaddy, caddyRepo := cfg.CaddyRepo != "", ""
+	if cfg.CaddyFromRepo() {
+		caddyRepo = cfg.CaddyRepo
+	}
 	if !cfg.InstallPortainer {
 		pmode = "off"
 	}
@@ -133,17 +136,24 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 		page{
 			title: "Web server",
 			fields: []huh.Field{
-				huh.NewNote().Description("Your Caddy setup as the server's web server on :80/:443 — cloned from GitHub\n" +
-					"(a private repo gets a read-only deploy key), started with docker compose.\n" +
+				huh.NewNote().Description("Caddy as the server's web server on :80/:443, from its official image: nothing\n" +
+					"to clone, no keys. Sites go in a folder of *.caddy files.\n" +
 					"Later:  sudo forge caddy"),
-				huh.NewConfirm().Title("Install your Caddy web server?").Value(&installCaddy),
+				huh.NewConfirm().Title("Install the Caddy web server?").Value(&installCaddy),
 			},
 		},
 		page{
 			title: "Web server",
 			fields: []huh.Field{
-				huh.NewInput().Title("Caddy repo (owner/repo with a docker-compose.prod.yml)").Value(&caddyRepo).
-					Validate(config.ValidGitHubRepo),
+				huh.NewInput().Title("Your own Caddy repo (blank: the official image)").
+					Description("owner/repo with a docker-compose.prod.yml. A private one gets a read-only deploy key.").
+					Value(&caddyRepo).
+					Validate(func(s string) error {
+						if strings.TrimSpace(s) == "" {
+							return nil
+						}
+						return config.ValidGitHubRepo(s)
+					}),
 			},
 			hide: func() bool { return !installCaddy },
 		},
@@ -204,7 +214,7 @@ func RunForm(cfg config.Config, askPassword bool) (config.Config, error) {
 	cfg.GitHubRepos, _ = config.ParseGitHubRepos(repos) // validated by the field
 	cfg.CaddyRepo = ""
 	if installCaddy {
-		cfg.CaddyRepo = caddyRepo
+		cfg.CaddyRepo = cmp.Or(strings.TrimSpace(caddyRepo), config.CaddyBuiltin)
 	}
 	cfg.AdminKeySource = config.AdminKeySource(src)
 	cfg.SwapGB = atoiOr(swap, cfg.SwapGB)
