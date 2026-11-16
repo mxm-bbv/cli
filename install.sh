@@ -59,12 +59,14 @@ else
 fi
 
 # --- download --------------------------------------------------------------
-# curl is preferred; minimal Debian installs often ship only wget.
+# curl is preferred; minimal Debian installs often ship only wget. The progress
+# bar only for a person at a terminal: a program reading the log gets none.
+if [ -t 2 ]; then progress=1; else progress=; fi
 if command -v curl >/dev/null 2>&1; then
-  fetch()       { curl -fSL --progress-bar "$1" -o "$2"; }
+  fetch()       { if [ -n "$progress" ]; then curl -fSL --progress-bar "$1" -o "$2"; else curl -fsSL "$1" -o "$2"; fi; }
   fetch_quiet() { curl -fsSL "$1" -o "$2" 2>/dev/null; }
 elif command -v wget >/dev/null 2>&1; then
-  fetch()       { wget -q --show-progress -O "$2" "$1"; }
+  fetch()       { if [ -n "$progress" ]; then wget -q --show-progress -O "$2" "$1"; else wget -q -O "$2" "$1"; fi; }
   fetch_quiet() { wget -q -O "$2" "$1"; }
 else
   red "Need curl or wget to download forge (apt-get install -y curl)."; exit 1

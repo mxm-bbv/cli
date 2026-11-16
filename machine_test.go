@@ -321,3 +321,29 @@ func TestSSHLoginNeedsASetup(t *testing.T) {
 		t.Errorf("no key: %v", err)
 	}
 }
+
+// A module on a server no setup provisioned works for the user machine mode lets
+// run it, not a deploy user that isn't there.
+func TestUnprovisionedUser(t *testing.T) {
+	exists := func(names ...string) func(string) bool {
+		return func(name string) bool { return slices.Contains(names, name) }
+	}
+	cases := []struct {
+		sudo  string
+		users []string
+		want  string
+	}{
+		{"ubuntu", []string{"ubuntu"}, "ubuntu"},
+		{"ubuntu", []string{"ubuntu", "deploy"}, "ubuntu"},
+		{"", []string{"deploy"}, "deploy"},
+		{"root", []string{"deploy"}, "deploy"},
+		{"", nil, "root"},
+		{"Bad;Name", []string{"Bad;Name"}, "root"},
+		{"ghost", nil, "root"},
+	}
+	for _, c := range cases {
+		if got := unprovisionedUser("deploy", c.sudo, exists(c.users...)); got != c.want {
+			t.Errorf("sudo %q, users %v: %q, want %q", c.sudo, c.users, got, c.want)
+		}
+	}
+}
