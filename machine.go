@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -72,6 +73,24 @@ type module struct {
 // step wraps work that isn't one of the provisioning steps.
 func step(name string, run func() error) []steps.Step {
 	return []steps.Step{{Name: name, Run: func(*steps.Context) error { return run() }}}
+}
+
+// unprovisionedUser is who a module works for on a server no setup provisioned:
+// there's no deploy user forge made, so it's the user machine mode lets run it
+// (sudo says who in SUDO_USER), else the default when it exists, else root.
+func unprovisionedUser(fallback, sudoUser string, exists func(string) bool) string {
+	if sudoUser != "" && sudoUser != "root" && config.ValidUsername(sudoUser) == nil && exists(sudoUser) {
+		return sudoUser
+	}
+	if exists(fallback) {
+		return fallback
+	}
+	return "root"
+}
+
+func userExists(name string) bool {
+	_, err := user.Lookup(name)
+	return err == nil
 }
 
 // yesNo is the choice a program answers on/off questions with.
@@ -369,7 +388,10 @@ var modules = []module{
 			{Name: "projects", Type: "text", Label: "Projects folder", Help: "mounted as /projects for the sites' files, on a new setup; empty is the deploy user's ~/projects"},
 		},
 		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
-			cfg, _ := loadState()
+			cfg, saved := loadState()
+			if !saved {
+				cfg.Username = unprovisionedUser(cfg.Username, os.Getenv("SUDO_USER"), userExists)
+			}
 			if p := in["projects"]; p != "" {
 				if !filepath.IsAbs(p) || !movePathChars.MatchString(p) || strings.Contains(p, "..") || p == "/" {
 					return nil, nil, errors.New("projects: an absolute folder")
