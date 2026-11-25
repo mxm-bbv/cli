@@ -51,6 +51,22 @@ func preflightStep() Step {
 	}
 }
 
+// DeployToolsStep installs what deploy.me needs on a server that a setup from
+// before forge installed it left without: rsync, which uploads a release. apt's
+// lists are refreshed only when something is missing, so a second run is quick.
+func DeployToolsStep() Step {
+	return Step{
+		Name: "Deploy tools (rsync)",
+		Skip: func(*Context) bool { return pkgInstalled("rsync") },
+		Run: func(*Context) error {
+			if _, err := aptGet("update", "-y"); err != nil {
+				return err
+			}
+			return aptInstall("rsync")
+		},
+	}
+}
+
 // ensureOneOf installs pkg unless one of the alternatives is already present.
 func ensureOneOf(alternatives []string, pkg string) error {
 	for _, alt := range alternatives {

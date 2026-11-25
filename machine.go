@@ -514,6 +514,14 @@ var modules = []module{
 		},
 	},
 	{
+		Name:        "deploy-tools",
+		Title:       "Deploy tools",
+		Description: "What deploys need on the server and a setup from before didn't install: rsync, which uploads a release. Installs only what's missing; safe to run again.",
+		build: func(map[string]string) ([]steps.Step, *steps.Context, error) {
+			return []steps.Step{steps.DeployToolsStep()}, &steps.Context{}, nil
+		},
+	},
+	{
 		Name:        "update",
 		Title:       "Update forge",
 		Description: "Replaces this forge with the latest release, after checking its minisign signature and checksum. Fails closed.",

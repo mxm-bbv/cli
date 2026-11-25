@@ -35,7 +35,7 @@ func TestModulesCatalog(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"setup", "ssh-login", "tailscale", "agent-secret", "agent-remove", "github", "caddy", "ssh", "tripwire-baseline", "alerts", "update", "auto-update"} {
+	for _, name := range []string{"setup", "ssh-login", "tailscale", "agent-secret", "agent-remove", "github", "caddy", "ssh", "tripwire-baseline", "alerts", "deploy-tools", "update", "auto-update"} {
 		if !seen[name] {
 			t.Errorf("module %s missing", name)
 		}

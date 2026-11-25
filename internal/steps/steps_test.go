@@ -117,6 +117,29 @@ func TestDryRunAllSteps(t *testing.T) {
 
 // TestPortainerPublicMode covers the discouraged fallback: the agent stays on
 // 0.0.0.0 but must carry a secret, skip tailscale, and open 9001 in DOCKER-USER.
+func TestDeployToolsInstallsRsyncOnlyWhenMissing(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false) // a pristine host: no package installed
+
+	s := DeployToolsStep()
+	if s.Skip(&Context{}) {
+		t.Fatal("rsync is missing: the step must run")
+	}
+	if err := s.Run(&Context{}); err != nil {
+		t.Fatalf("deploy tools failed: %v", err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	for _, want := range []string{"apt-get -o DPkg::Lock::Timeout=300 update", "--no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold rsync"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("want %q in:\n%s", want, log)
+		}
+	}
+
+	pkgInstalled = func(pkg string) bool { return pkg == "rsync" }
+	if !s.Skip(&Context{}) {
+		t.Error("rsync is there: the step has nothing to do")
+	}
+}
+
 func TestPortainerPublicMode(t *testing.T) {
 	dryRunAs(t, ubuntuNoble, false)
 
