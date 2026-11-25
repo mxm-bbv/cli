@@ -38,8 +38,9 @@ func preflightStep() Step {
 			// Debian install (only Ubuntu ships it) — without it the deploy
 			// user's sudo group membership is useless, and once root login is
 			// disabled nobody could administer the box. iproute2 provides `ss`
-			// for verifying sshd's listening port.
-			if err := aptInstall("ca-certificates", "curl", "gnupg", "sudo", "openssh-client", "iproute2"); err != nil {
+			// for verifying sshd's listening port. rsync: deploys upload a
+			// release with it, and a minimal Debian 13 doesn't ship it.
+			if err := aptInstall("ca-certificates", "curl", "gnupg", "sudo", "openssh-client", "iproute2", "rsync"); err != nil {
 				return err
 			}
 			// hostnamectl/timedatectl talk to systemd over D-Bus. Minimal

@@ -36,18 +36,18 @@ func TestDryRunAllSteps(t *testing.T) {
 
 	log := strings.Join(system.CommandLog, "\n")
 	wantSubstrings := []string{
-		"apt-get -o DPkg::Lock::Timeout=300 update",               // preflight (non-interactive)
-		"linux/ubuntu/dists/noble/Release",                        // docker repo availability checked first
-		"sources.list.d/docker.list",                              // docker apt source (always written)
-		"ca-certificates curl gnupg sudo openssh-client iproute2", // sudo: minimal Debian lacks it
-		"--force-confold dbus",                                    // hostnamectl/timedatectl need a bus
-		"fail2ban python3-systemd",                                // journald backend needs python3-systemd
-		"useradd -m -s /bin/bash deploy",                          // deploy user
-		"usermod -aG sudo deploy",                                 // sudo group
-		"usermod -aG docker deploy",                               // docker group
-		"ssh-keygen -q -t ed25519 -C deploy@",                     // one deploy key per repo
-		"-f /home/deploy/.ssh/github-mxm-bbv--app -N",             // …named after the repo
-		"append -> /home/deploy/.ssh/config",                      // ssh alias that selects the key
+		"apt-get -o DPkg::Lock::Timeout=300 update",                     // preflight (non-interactive)
+		"linux/ubuntu/dists/noble/Release",                              // docker repo availability checked first
+		"sources.list.d/docker.list",                                    // docker apt source (always written)
+		"ca-certificates curl gnupg sudo openssh-client iproute2 rsync", // sudo and rsync: minimal Debian lacks them
+		"--force-confold dbus",                                          // hostnamectl/timedatectl need a bus
+		"fail2ban python3-systemd",                                      // journald backend needs python3-systemd
+		"useradd -m -s /bin/bash deploy",                                // deploy user
+		"usermod -aG sudo deploy",                                       // sudo group
+		"usermod -aG docker deploy",                                     // docker group
+		"ssh-keygen -q -t ed25519 -C deploy@",                           // one deploy key per repo
+		"-f /home/deploy/.ssh/github-mxm-bbv--app -N",                   // …named after the repo
+		"append -> /home/deploy/.ssh/config",                            // ssh alias that selects the key
 		"url.git@github-mxm-bbv--app:mxm-bbv/app.git.insteadOf git@github.com:mxm-bbv/app.git", // plain clone URLs use it
 		"gh auth login --web (one-time code)",                                                  // device login, approved on a phone
 		"gh repo deploy-key add /home/deploy/.ssh/github-mxm-bbv--app.pub --repo mxm-bbv/app",  // read-only by default
