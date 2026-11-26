@@ -68,6 +68,37 @@ func TestReadInputs(t *testing.T) {
 	}
 }
 
+// TestUpdateTakesABroughtRelease: a file goes with its sha256 and version, and
+// installs that release instead of asking GitHub; without one it's the latest.
+func TestUpdateTakesABroughtRelease(t *testing.T) {
+	m := findModule("update")
+	st, _, err := m.build(map[string]string{"file": "/home/deploy/forge", "sha256": strings.Repeat("a", 64), "version": "v0.9.0"})
+	if err != nil || len(st) != 1 || st[0].Name != "forge v0.9.0" {
+		t.Fatalf("got %v, %v", st, err)
+	}
+	if st, _, err := m.build(map[string]string{}); err != nil || st[0].Name != "forge itself" {
+		t.Errorf("the latest release: %v, %v", st, err)
+	}
+	for _, in := range []map[string]string{
+		{"file": "/home/deploy/forge"},
+		{"file": "/home/deploy/forge", "sha256": strings.Repeat("a", 64)},
+		{"sha256": strings.Repeat("a", 64)},
+		{"version": "v0.9.0"},
+	} {
+		if _, _, err := m.build(in); err == nil {
+			t.Errorf("%v went through", in)
+		}
+	}
+	t.Setenv("SUDO_UID", "1001")
+	if sudoUID() != 1001 {
+		t.Error("SUDO_UID isn't who asked")
+	}
+	t.Setenv("SUDO_UID", "")
+	if sudoUID() != 0 {
+		t.Error("no sudo is root")
+	}
+}
+
 // TestMachineRunSaysWhatHappens: every line a program acts on is ::forge::
 // and JSON; a failing step stops the run and says why.
 func TestMachineRunSaysWhatHappens(t *testing.T) {

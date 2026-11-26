@@ -75,6 +75,14 @@ func step(name string, run func() error) []steps.Step {
 	return []steps.Step{{Name: name, Run: func(*steps.Context) error { return run() }}}
 }
 
+// sudoUID is the user sudo runs this for (SUDO_UID), root when there's none.
+func sudoUID() int {
+	if uid, err := strconv.Atoi(os.Getenv("SUDO_UID")); err == nil && uid >= 0 {
+		return uid
+	}
+	return 0
+}
+
 // unprovisionedUser is who a module works for on a server no setup provisioned:
 // there's no deploy user forge made, so it's the user machine mode lets run it
 // (sudo says who in SUDO_USER), else the default when it exists, else root.
@@ -524,8 +532,26 @@ var modules = []module{
 	{
 		Name:        "update",
 		Title:       "Update forge",
-		Description: "Replaces this forge with the latest release, after checking its minisign signature and checksum. Fails closed.",
-		build: func(map[string]string) ([]steps.Step, *steps.Context, error) {
+		Description: "Replaces this forge with the latest release, after checking its minisign signature and checksum. Fails closed. A program that keeps forge's version itself brings the release as a file instead: it's installed when its SHA256 matches, GitHub isn't asked, and automatic updates go off.",
+		Inputs: []moduleInput{
+			{Name: "file", Type: "text", Label: "A release on this server", Help: "where the program put the binary: a file of the user that runs this. Empty downloads the latest release"},
+			{Name: "sha256", Type: "text", Label: "Its SHA256", Help: "with file"},
+			{Name: "version", Type: "text", Label: "Its version", Help: "with file: what it says, as v1.2.3"},
+		},
+		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
+			if in["file"] != "" {
+				if in["sha256"] == "" || in["version"] == "" {
+					return nil, nil, errors.New("file goes with its sha256 and version")
+				}
+				return []steps.Step{{Name: "forge " + in["version"], Run: func(ctx *steps.Context) error {
+					notes, err := update.FromFile(in["file"], in["sha256"], in["version"], sudoUID())
+					ctx.Notes = append(ctx.Notes, notes...)
+					return err
+				}}}, &steps.Context{}, nil
+			}
+			if in["sha256"] != "" || in["version"] != "" {
+				return nil, nil, errors.New("sha256 and version go with file")
+			}
 			return step("forge itself", func() error {
 				if update.SelfUpdate(false) != 0 {
 					return errors.New("the update didn't go through (signature, checksum or download)")
