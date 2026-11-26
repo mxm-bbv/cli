@@ -1,16 +1,19 @@
 package main
 
-// A person's own way in, with a term (the module's access grants):
+// A person's own way in, with a term (Studio OS access grants):
 //
-//	access-grant   a personal user s-<id> (made if missing, no shell, no
-//	               password) and one line in its authorized_keys: the key,
-//	               what it may do and until when sshd lets it in
-//	               (expiry-time), signed studio-os:<grant>
-//	access-revoke  takes that line away; a user left with none is logged
-//	               out, taken off AllowUsers and removed
+//	access-grant   the person's user (made if missing: no password; a user
+//	               already on the server is adopted, never root or the
+//	               deploy user) and one line in its authorized_keys — the key
+//	               and until when sshd lets it in (expiry-time), signed
+//	               studio-os:<grant>. Kind admin: a shell and sudo (its own
+//	               sudoers.d file); kind tunnel: no shell, one port forward.
+//	access-revoke  takes that line away; with no admin grant left the sudoers
+//	               file goes; with no grant left the user is logged out, leaves
+//	               AllowUsers if forge put it there, and is removed if forge
+//	               made it
 //
-// Only users forge made for grants (steps.AccessUsersFile) are ever touched:
-// never root, the deploy user or anyone the server had before.
+// Only users of grants (steps.AccessUsersFile) are ever touched.
 
 import (
 	"errors"
@@ -19,74 +22,103 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mxm-bbv/cli/internal/config"
 	"github.com/mxm-bbv/cli/internal/steps"
 	"github.com/mxm-bbv/cli/internal/system"
 )
 
 var (
-	grantIDRe    = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
-	accessUserRe = regexp.MustCompile(`^s-[0-9]{1,12}$`)
-	expiresRe    = regexp.MustCompile(`^[0-9]{12}$`)
+	grantIDRe = regexp.MustCompile(`^[a-z0-9-]{1,40}$`)
+	expiresRe = regexp.MustCompile(`^[0-9]{12}$`)
+)
+
+const (
+	kindTunnel = "tunnel"
+	kindAdmin  = "admin"
+	// sudoersDir holds one file per admin user: forge-access-<name>.
+	sudoersDir = "/etc/sudoers.d"
 )
 
 // grantMarker ends each authorized_keys line a grant adds.
 func grantMarker(grant string) string { return "studio-os:" + grant }
 
-// grantLine is the authorized_keys line of a tunnel grant: no shell, no pty,
-// only a forward to one port on the server's loopback, until the moment given.
-// sshd reads expiry-time in the server's own time zone (a trailing Z isn't
-// known to every OpenSSH a server may have).
-func grantLine(key accessKey, blob, grant string, until time.Time, port int) string {
+// grantLine is the authorized_keys line of a grant, until the moment given.
+// tunnel: no shell, no pty, only a forward to one port on the server's
+// loopback. admin: a shell like any key, with the term. sshd reads
+// expiry-time in the server's own time zone (a trailing Z isn't known to
+// every OpenSSH a server may have).
+func grantLine(kind string, key accessKey, blob, grant string, until time.Time, port int) string {
+	expiry := until.In(time.Local).Format("200601021504")
+	if kind == kindAdmin {
+		return fmt.Sprintf(`expiry-time="%s" %s %s %s`, expiry, key.Type, blob, grantMarker(grant))
+	}
 	return fmt.Sprintf(`restrict,port-forwarding,permitopen="127.0.0.1:%d",expiry-time="%s" %s %s %s`,
-		port, until.In(time.Local).Format("200601021504"), key.Type, blob, grantMarker(grant))
+		port, expiry, key.Type, blob, grantMarker(grant))
 }
 
 // withGrant is authorized_keys with the grant's line put in (in place of an
 // earlier one of the same grant) or, with line "", taken out; and how many
-// grant lines are left.
-func withGrant(content, grant, line string) (string, int) {
+// grant lines are left, and how many of them are admin's (no `restrict`).
+func withGrant(content, grant, line string) (string, int, int) {
 	var kept []string
-	left := 0
-	for _, l := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
-		if l == "" {
-			continue
-		}
-		if strings.HasSuffix(l, " "+grantMarker(grant)) {
-			continue
-		}
+	left, admins := 0, 0
+	count := func(l string) {
 		if strings.Contains(l, " studio-os:") {
 			left++
+			if !strings.HasPrefix(l, "restrict") {
+				admins++
+			}
 		}
+	}
+	for _, l := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
+		if l == "" || strings.HasSuffix(l, " "+grantMarker(grant)) {
+			continue
+		}
+		count(l)
 		kept = append(kept, l)
 	}
 	if line != "" {
 		kept = append(kept, line)
-		left++
+		count(line)
 	}
 	body := strings.Join(kept, "\n")
 	if body != "" {
 		body += "\n"
 	}
-	return body, left
+	return body, left, admins
 }
 
-// grantInputs checks access-grant's inputs: the key, its base64, the port and
-// the moment the grant ends.
+// grantUser checks a grant's user name: a valid one, never root or the user
+// forge works for (the deploy user a program signs in as).
+func grantUser(name string) error {
+	if err := config.ValidUsername(name); err != nil {
+		return fmt.Errorf("user: %w", err)
+	}
+	if name == "root" || name == os.Getenv("SUDO_USER") {
+		return fmt.Errorf("user: %s is not given to a person", name)
+	}
+	if u, err := user.Lookup(name); err == nil && u.Uid == strconv.Itoa(sudoUID()) {
+		return fmt.Errorf("user: %s is not given to a person", name)
+	}
+	return nil
+}
+
+// grantInputs checks access-grant's inputs: the key, its base64, the port
+// (tunnel) and the moment the grant ends.
 func grantInputs(in map[string]string, now time.Time) (accessKey, string, int, time.Time, error) {
 	var zero time.Time
 	if !grantIDRe.MatchString(in["grant"]) {
 		return accessKey{}, "", 0, zero, errors.New("grant: a-z, 0-9 and -, up to 40")
 	}
-	if !accessUserRe.MatchString(in["user"]) {
-		return accessKey{}, "", 0, zero, errors.New("user: s-<digits>, a personal user forge makes for grants")
+	if err := grantUser(in["user"]); err != nil {
+		return accessKey{}, "", 0, zero, err
 	}
-	if in["kind"] != "tunnel" {
-		return accessKey{}, "", 0, zero, errors.New("kind: tunnel")
+	if in["kind"] != kindTunnel && in["kind"] != kindAdmin {
+		return accessKey{}, "", 0, zero, errors.New("kind: tunnel or admin")
 	}
 	key, ok := parseAuthorizedKey(in["key"])
 	if !ok || key.Options != "" {
@@ -100,36 +132,93 @@ func grantInputs(in map[string]string, now time.Time) (accessKey, string, int, t
 	if err != nil || !until.After(now) {
 		return accessKey{}, "", 0, zero, errors.New("expires: a moment still to come")
 	}
-	port, err := strconv.Atoi(in["port"])
-	if err != nil || port < 1 || port > 65535 {
-		return accessKey{}, "", 0, zero, errors.New("port: 1-65535")
+	port := 0
+	if in["kind"] == kindTunnel {
+		if port, err = strconv.Atoi(in["port"]); err != nil || port < 1 || port > 65535 {
+			return accessKey{}, "", 0, zero, errors.New("port: 1-65535")
+		}
 	}
 	return key, blob, port, until, nil
 }
 
-// ensureAccessUser makes the personal user unless forge made it already; a
-// user by that name forge didn't make is refused.
-func ensureAccessUser(name string) (*user.User, error) {
-	if u, err := user.Lookup(name); err == nil {
-		if !slices.Contains(steps.AccessUsers(), name) {
-			return nil, fmt.Errorf("%s is on this server already and forge didn't make it: refused", name)
+// ensureAccessUser makes the user, or adopts one already on the server (a
+// person's own, uid 1000 and up). An admin grant needs a login shell: a user
+// forge made gets bash, an adopted one must have its own.
+func ensureAccessUser(name, kind string) (*user.User, error) {
+	known, listed := steps.FindAccessUser(name)
+	u, err := user.Lookup(name)
+	if err != nil {
+		shell := "/usr/sbin/nologin"
+		if kind == kindAdmin {
+			shell = "/bin/bash"
 		}
-		return u, nil
+		if _, err := system.Run("groupadd", "-f", "forge-access"); err != nil {
+			return nil, err
+		}
+		if _, err := system.Run("useradd", "-m", "-s", shell, "-G", "forge-access", "-c", "Studio OS access", name); err != nil {
+			return nil, err
+		}
+		// "*": no password to sign in with, and not "locked" (a "!" would keep sshd from letting the key in).
+		if _, err := system.Run("usermod", "-p", "*", name); err != nil {
+			return nil, err
+		}
+		if err := steps.SetAccessUser(steps.AccessUser{Name: name, Allowed: !steps.SSHAllows(name)}, true); err != nil {
+			return nil, err
+		}
+		return user.Lookup(name)
 	}
-	if _, err := system.Run("groupadd", "-f", "forge-access"); err != nil {
-		return nil, err
+	if !listed {
+		if uid, _ := strconv.Atoi(u.Uid); uid < 1000 {
+			return nil, fmt.Errorf("%s is a system user: refused", name)
+		}
+		known = steps.AccessUser{Name: name, Adopted: true, Allowed: !steps.SSHAllows(name)}
+		if err := steps.SetAccessUser(known, true); err != nil {
+			return nil, err
+		}
 	}
-	if _, err := system.Run("useradd", "-m", "-s", "/usr/sbin/nologin", "-G", "forge-access", "-c", "Studio OS access", name); err != nil {
-		return nil, err
+	if kind == kindAdmin {
+		shell := loginShell(name)
+		switch {
+		case !known.Adopted && !strings.HasSuffix(shell, "sh"):
+			if _, err := system.Run("usermod", "-s", "/bin/bash", name); err != nil {
+				return nil, err
+			}
+		case known.Adopted && !strings.HasSuffix(shell, "sh"):
+			return nil, fmt.Errorf("%s has no login shell (%s): refused", name, shell)
+		}
 	}
-	// "*": no password to sign in with, and not "locked" (a "!" would keep sshd from letting the key in).
-	if _, err := system.Run("usermod", "-p", "*", name); err != nil {
-		return nil, err
+	return u, nil
+}
+
+// loginShell is a user's shell from /etc/passwd.
+func loginShell(name string) string {
+	data, _ := os.ReadFile("/etc/passwd")
+	for _, l := range strings.Split(string(data), "\n") {
+		if p := strings.Split(l, ":"); len(p) >= 7 && p[0] == name {
+			return p[6]
+		}
 	}
-	if err := steps.SetAccessUser(name, true); err != nil {
-		return nil, err
+	return ""
+}
+
+func sudoersPath(name string) string { return filepath.Join(sudoersDir, "forge-access-"+name) }
+
+// allowSudo gives an admin user sudo with its own sudoers.d file, checked by
+// visudo before it's put in place; or takes the file away.
+func allowSudo(name string, on bool) error {
+	path := sudoersPath(name)
+	if !on {
+		return system.RemoveFile(path)
 	}
-	return user.Lookup(name)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(name+" ALL=(ALL) NOPASSWD:ALL\n"), 0o440); err != nil {
+		return err
+	}
+	if _, err := system.Run("visudo", "-cf", tmp); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("visudo refuses sudo for %s: %w", name, err)
+	}
+	return os.Rename(tmp, path)
 }
 
 // writeAuthorizedKeys writes a user's authorized_keys: 0600, theirs, in one move.
@@ -164,37 +253,40 @@ var grantModules = []module{
 	{
 		Name:        "access-grant",
 		Title:       "Let a person in",
-		Description: "A personal user s-<id> (made if missing: no shell, no password) gets one key line with what it may do and until when sshd lets it in (expiry-time), signed studio-os:<grant>; through forge's AllowUsers too. The same grant again replaces its line.",
+		Description: "The person's user (made if missing; one already on the server is adopted, never root or the deploy user) gets one key line with a term (expiry-time), signed studio-os:<grant>, and gets through forge's AllowUsers. admin: a shell and sudo; tunnel: one port forward, no shell. The same grant again replaces its line.",
 		Danger:      true,
 		Internal:    true,
 		Inputs: []moduleInput{
 			{Name: "grant", Type: "text", Label: "Grant", Required: true},
-			{Name: "user", Type: "text", Label: "Personal user, s-<id>", Required: true},
-			{Name: "kind", Type: "choice", Label: "What for", Required: true, Options: []string{"tunnel"}},
+			{Name: "user", Type: "text", Label: "The person's user", Required: true},
+			{Name: "kind", Type: "choice", Label: "What for", Required: true, Options: []string{kindAdmin, kindTunnel}},
 			{Name: "key", Type: "text", Label: "The person's public key", Required: true},
 			{Name: "expires", Type: "text", Label: "Until, YYYYMMDDHHMM UTC", Required: true},
-			{Name: "port", Type: "text", Label: "Port on the server's 127.0.0.1", Required: true},
+			{Name: "port", Type: "text", Label: "Port on the server's 127.0.0.1 (tunnel)"},
 		},
 		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
 			key, blob, port, until, err := grantInputs(in, time.Now().UTC())
 			if err != nil {
 				return nil, nil, err
 			}
-			name, grant := in["user"], in["grant"]
+			name, grant, kind := in["user"], in["grant"], in["kind"]
 			ctx := &steps.Context{}
 			return []steps.Step{{Name: "Let " + name + " in", Run: func(c *steps.Context) error {
-				u, err := ensureAccessUser(name)
+				u, err := ensureAccessUser(name, kind)
 				if err != nil {
 					return err
 				}
-				body, _ := withGrant(readAuthorizedKeys(u), grant, grantLine(key, blob, grant, until, port))
+				body, _, admins := withGrant(readAuthorizedKeys(u), grant, grantLine(kind, key, blob, grant, until, port))
+				if err := allowSudo(name, admins > 0); err != nil {
+					return err
+				}
 				if err := writeAuthorizedKeys(u, body); err != nil {
 					return err
 				}
 				if err := steps.AllowAccessUser(name, true); err != nil {
 					return err
 				}
-				c.Result = map[string]any{"user": name, "grant": grant, "fingerprint": key.Fingerprint}
+				c.Result = map[string]any{"user": name, "grant": grant, "kind": kind, "fingerprint": key.Fingerprint}
 				return nil
 			}}}, ctx, nil
 		},
@@ -202,46 +294,57 @@ var grantModules = []module{
 	{
 		Name:        "access-revoke",
 		Title:       "Take a person's way in away",
-		Description: "Takes a grant's key line away; a personal user left with none is logged out, taken off AllowUsers and removed. A grant already gone isn't an error.",
+		Description: "Takes a grant's key line away; with no admin grant left the user loses sudo, with no grant left it is logged out, leaves AllowUsers if forge put it there and is removed if forge made it. A grant already gone isn't an error.",
 		Danger:      true,
 		Internal:    true,
 		Inputs: []moduleInput{
 			{Name: "grant", Type: "text", Label: "Grant", Required: true},
-			{Name: "user", Type: "text", Label: "Personal user, s-<id>", Required: true},
+			{Name: "user", Type: "text", Label: "The person's user", Required: true},
 		},
 		build: func(in map[string]string) ([]steps.Step, *steps.Context, error) {
 			if !grantIDRe.MatchString(in["grant"]) {
 				return nil, nil, errors.New("grant: a-z, 0-9 and -, up to 40")
 			}
 			name, grant := in["user"], in["grant"]
-			if !accessUserRe.MatchString(name) {
-				return nil, nil, errors.New("user: s-<digits>")
+			if err := grantUser(name); err != nil {
+				return nil, nil, err
 			}
 			ctx := &steps.Context{}
 			return []steps.Step{{Name: "Take " + name + "'s way in away", Run: func(c *steps.Context) error {
 				c.Result = map[string]any{"user": name, "grant": grant, "removed": false}
+				known, listed := steps.FindAccessUser(name)
 				u, err := user.Lookup(name)
-				if err != nil || !slices.Contains(steps.AccessUsers(), name) {
+				if err != nil || !listed {
 					return nil
 				}
-				body, left := withGrant(readAuthorizedKeys(u), grant, "")
+				body, left, admins := withGrant(readAuthorizedKeys(u), grant, "")
 				if err := writeAuthorizedKeys(u, body); err != nil {
+					return err
+				}
+				if err := allowSudo(name, admins > 0); err != nil {
 					return err
 				}
 				if left > 0 {
 					return nil
 				}
-				// Open sessions end with the user: a tunnel already up would otherwise outlive the grant.
-				_, _ = system.Run("loginctl", "terminate-user", name)
-				_, _ = system.Run("pkill", "-KILL", "-u", name)
-				if err := steps.AllowAccessUser(name, false); err != nil {
-					return err
+				// Open sessions end with the grant: a shell or a tunnel already up would otherwise outlive it. An adopted
+				// user with keys of its own keeps its sessions: those may not be the grant's.
+				if !known.Adopted || strings.TrimSpace(body) == "" {
+					_, _ = system.Run("loginctl", "terminate-user", name)
+					_, _ = system.Run("pkill", "-KILL", "-u", name)
 				}
-				if _, err := system.Run("userdel", "-r", name); err != nil {
-					return err
+				if known.Allowed {
+					if err := steps.AllowAccessUser(name, false); err != nil {
+						return err
+					}
 				}
-				c.Result["removed"] = true
-				return steps.SetAccessUser(name, false)
+				if !known.Adopted {
+					if _, err := system.Run("userdel", "-r", name); err != nil {
+						return err
+					}
+					c.Result["removed"] = true
+				}
+				return steps.SetAccessUser(known, false)
 			}}}, ctx, nil
 		},
 	},
