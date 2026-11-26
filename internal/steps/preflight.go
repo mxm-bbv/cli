@@ -38,14 +38,31 @@ func preflightStep() Step {
 			// Debian install (only Ubuntu ships it) — without it the deploy
 			// user's sudo group membership is useless, and once root login is
 			// disabled nobody could administer the box. iproute2 provides `ss`
-			// for verifying sshd's listening port.
-			if err := aptInstall("ca-certificates", "curl", "gnupg", "sudo", "openssh-client", "iproute2"); err != nil {
+			// for verifying sshd's listening port. rsync: deploys upload a
+			// release with it, and a minimal Debian 13 doesn't ship it.
+			if err := aptInstall("ca-certificates", "curl", "gnupg", "sudo", "openssh-client", "iproute2", "rsync"); err != nil {
 				return err
 			}
 			// hostnamectl/timedatectl talk to systemd over D-Bus. Minimal
 			// images (debootstrap minbase, some VPS templates) ship systemd
 			// without a bus, and both fail with "Failed to connect to bus".
 			return ensureOneOf([]string{"dbus", "dbus-broker"}, "dbus")
+		},
+	}
+}
+
+// DeployToolsStep installs what deploy.me needs on a server that a setup from
+// before forge installed it left without: rsync, which uploads a release. apt's
+// lists are refreshed only when something is missing, so a second run is quick.
+func DeployToolsStep() Step {
+	return Step{
+		Name: "Deploy tools (rsync)",
+		Skip: func(*Context) bool { return pkgInstalled("rsync") },
+		Run: func(*Context) error {
+			if _, err := aptGet("update", "-y"); err != nil {
+				return err
+			}
+			return aptInstall("rsync")
 		},
 	}
 }

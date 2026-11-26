@@ -36,18 +36,18 @@ func TestDryRunAllSteps(t *testing.T) {
 
 	log := strings.Join(system.CommandLog, "\n")
 	wantSubstrings := []string{
-		"apt-get -o DPkg::Lock::Timeout=300 update",               // preflight (non-interactive)
-		"linux/ubuntu/dists/noble/Release",                        // docker repo availability checked first
-		"sources.list.d/docker.list",                              // docker apt source (always written)
-		"ca-certificates curl gnupg sudo openssh-client iproute2", // sudo: minimal Debian lacks it
-		"--force-confold dbus",                                    // hostnamectl/timedatectl need a bus
-		"fail2ban python3-systemd",                                // journald backend needs python3-systemd
-		"useradd -m -s /bin/bash deploy",                          // deploy user
-		"usermod -aG sudo deploy",                                 // sudo group
-		"usermod -aG docker deploy",                               // docker group
-		"ssh-keygen -q -t ed25519 -C deploy@",                     // one deploy key per repo
-		"-f /home/deploy/.ssh/github-mxm-bbv--app -N",             // …named after the repo
-		"append -> /home/deploy/.ssh/config",                      // ssh alias that selects the key
+		"apt-get -o DPkg::Lock::Timeout=300 update",                     // preflight (non-interactive)
+		"linux/ubuntu/dists/noble/Release",                              // docker repo availability checked first
+		"sources.list.d/docker.list",                                    // docker apt source (always written)
+		"ca-certificates curl gnupg sudo openssh-client iproute2 rsync", // sudo and rsync: minimal Debian lacks them
+		"--force-confold dbus",                                          // hostnamectl/timedatectl need a bus
+		"fail2ban python3-systemd",                                      // journald backend needs python3-systemd
+		"useradd -m -s /bin/bash deploy",                                // deploy user
+		"usermod -aG sudo deploy",                                       // sudo group
+		"usermod -aG docker deploy",                                     // docker group
+		"ssh-keygen -q -t ed25519 -C deploy@",                           // one deploy key per repo
+		"-f /home/deploy/.ssh/github-mxm-bbv--app -N",                   // …named after the repo
+		"append -> /home/deploy/.ssh/config",                            // ssh alias that selects the key
 		"url.git@github-mxm-bbv--app:mxm-bbv/app.git.insteadOf git@github.com:mxm-bbv/app.git", // plain clone URLs use it
 		"gh auth login --web (one-time code)",                                                  // device login, approved on a phone
 		"gh repo deploy-key add /home/deploy/.ssh/github-mxm-bbv--app.pub --repo mxm-bbv/app",  // read-only by default
@@ -117,6 +117,29 @@ func TestDryRunAllSteps(t *testing.T) {
 
 // TestPortainerPublicMode covers the discouraged fallback: the agent stays on
 // 0.0.0.0 but must carry a secret, skip tailscale, and open 9001 in DOCKER-USER.
+func TestDeployToolsInstallsRsyncOnlyWhenMissing(t *testing.T) {
+	dryRunAs(t, ubuntuNoble, false) // a pristine host: no package installed
+
+	s := DeployToolsStep()
+	if s.Skip(&Context{}) {
+		t.Fatal("rsync is missing: the step must run")
+	}
+	if err := s.Run(&Context{}); err != nil {
+		t.Fatalf("deploy tools failed: %v", err)
+	}
+	log := strings.Join(system.CommandLog, "\n")
+	for _, want := range []string{"apt-get -o DPkg::Lock::Timeout=300 update", "--no-install-recommends -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold rsync"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("want %q in:\n%s", want, log)
+		}
+	}
+
+	pkgInstalled = func(pkg string) bool { return pkg == "rsync" }
+	if !s.Skip(&Context{}) {
+		t.Error("rsync is there: the step has nothing to do")
+	}
+}
+
 func TestPortainerPublicMode(t *testing.T) {
 	dryRunAs(t, ubuntuNoble, false)
 
