@@ -124,7 +124,7 @@ func sshdOptions(cfg config.Config) []sshdOption {
 		allow += " root"
 	}
 	// People forge let in with an access grant stay in when setup runs again.
-	for _, u := range AccessUsers() {
+	for _, u := range allowedAccessUsers() {
 		if u != cfg.Username && u != "root" {
 			allow += " " + u
 		}

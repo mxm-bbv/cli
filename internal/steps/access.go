@@ -10,47 +10,96 @@ import (
 	"github.com/mxm-bbv/cli/internal/system"
 )
 
-// AccessUsersFile lists the personal users forge made for access grants
-// (access-grant), one a line: only those may be granted to or removed.
+// AccessUsersFile lists the users forge lets in for access grants
+// (access-grant), one a line: `<name> made|adopted added|had`. Only those are
+// ever granted to or taken back. A user forge made is removed with its last
+// grant; one it adopted (on the server before) stays, and leaves AllowUsers
+// only if forge put it there.
 const AccessUsersFile = "/var/lib/forge/access/users"
 
-// AccessUsers are the personal users forge made for access grants.
-func AccessUsers() []string {
+// AccessUser is one user of an access grant.
+type AccessUser struct {
+	Name    string
+	Adopted bool // on the server before the first grant: never removed
+	Allowed bool // forge put it in AllowUsers (rather than it being there already)
+}
+
+// AccessUsers are the users of access grants.
+func AccessUsers() []AccessUser {
 	return readAccessUsers(AccessUsersFile)
 }
 
-func readAccessUsers(path string) []string {
+// FindAccessUser is the user of access grants by that name.
+func FindAccessUser(name string) (AccessUser, bool) {
+	for _, u := range AccessUsers() {
+		if u.Name == name {
+			return u, true
+		}
+	}
+	return AccessUser{}, false
+}
+
+func readAccessUsers(path string) []AccessUser {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []AccessUser
 	for _, l := range strings.Split(string(data), "\n") {
-		if l = strings.TrimSpace(l); l != "" && !slices.Contains(out, l) {
-			out = append(out, l)
+		f := strings.Fields(l)
+		if len(f) == 0 || slices.ContainsFunc(out, func(u AccessUser) bool { return u.Name == f[0] }) {
+			continue
 		}
+		// A line with the name alone is from forge 0.11: a user it made and allowed.
+		u := AccessUser{Name: f[0], Allowed: true}
+		if len(f) > 1 {
+			u.Adopted = f[1] == "adopted"
+		}
+		if len(f) > 2 {
+			u.Allowed = f[2] == "added"
+		}
+		out = append(out, u)
 	}
 	return out
 }
 
-// SetAccessUser adds a user to the list or takes it off.
-func SetAccessUser(name string, on bool) error {
-	return setAccessUserIn(AccessUsersFile, name, on)
+// SetAccessUser puts a user on the list (replacing its line) or takes it off.
+func SetAccessUser(u AccessUser, on bool) error {
+	return setAccessUserIn(AccessUsersFile, u, on)
 }
 
-func setAccessUserIn(path, name string, on bool) error {
-	users := slices.DeleteFunc(readAccessUsers(path), func(u string) bool { return u == name })
+func setAccessUserIn(path string, u AccessUser, on bool) error {
+	users := slices.DeleteFunc(readAccessUsers(path), func(x AccessUser) bool { return x.Name == u.Name })
 	if on {
-		users = append(users, name)
+		users = append(users, u)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	body := strings.Join(users, "\n")
-	if body != "" {
-		body += "\n"
+	var b strings.Builder
+	for _, x := range users {
+		mode, allow := "made", "had"
+		if x.Adopted {
+			mode = "adopted"
+		}
+		if x.Allowed {
+			allow = "added"
+		}
+		fmt.Fprintf(&b, "%s %s %s\n", x.Name, mode, allow)
 	}
-	return os.WriteFile(path, []byte(body), 0o600)
+	return os.WriteFile(path, []byte(b.String()), 0o600)
+}
+
+// allowedAccessUsers are the users forge itself put in AllowUsers: setup run
+// again keeps them in.
+func allowedAccessUsers() []string {
+	var out []string
+	for _, u := range AccessUsers() {
+		if u.Allowed {
+			out = append(out, u.Name)
+		}
+	}
+	return out
 }
 
 // withAccessUser is forge's AllowUsers line with a user added or taken off;
@@ -72,9 +121,22 @@ func withAccessUser(dropIn, name string, on bool) (string, bool) {
 	return dropIn, false
 }
 
-// AllowAccessUser lets a personal user through forge's AllowUsers, or no
-// longer: sshd -t first, the old file back if it refuses, then a reload so
-// open sessions stay. Without forge's AllowUsers sshd lets everyone in already.
+// SSHAllows says whether forge's AllowUsers lets this user in already (true
+// also when there's no AllowUsers, so sshd lets everyone in).
+func SSHAllows(name string) bool {
+	dropIn, _ := readFileOrEmpty(sshdDropInPath)
+	for _, l := range strings.Split(dropIn, "\n") {
+		f := strings.Fields(l)
+		if len(f) > 0 && strings.EqualFold(f[0], "AllowUsers") {
+			return slices.Contains(f[1:], name)
+		}
+	}
+	return true
+}
+
+// AllowAccessUser lets a user through forge's AllowUsers, or no longer: sshd -t
+// first, the old file back if it refuses, then a reload so open sessions stay.
+// Without forge's AllowUsers sshd lets everyone in already.
 func AllowAccessUser(name string, on bool) error {
 	prev, err := readFileOrEmpty(sshdDropInPath)
 	if err != nil || prev == "" {
