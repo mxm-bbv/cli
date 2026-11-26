@@ -123,6 +123,12 @@ func sshdOptions(cfg config.Config) []sshdOption {
 		// though the operator chose to keep root login.
 		allow += " root"
 	}
+	// People forge let in with an access grant stay in when setup runs again.
+	for _, u := range AccessUsers() {
+		if u != cfg.Username && u != "root" {
+			allow += " " + u
+		}
+	}
 	opts := []sshdOption{
 		{"Port", strconv.Itoa(sshPort(cfg.SSHPort))},
 		{"AllowUsers", allow},
